@@ -1,0 +1,43 @@
+[project]
+name = "rm-latency-profiler"
+version = "0.1.0"
+description = "Black-box latency analysis for RoboMaster vision pipelines: MCAP telemetry analysis + video-based physical latency measurement."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "rm-latency-profiler contributors" }]
+keywords = ["robomaster", "latency", "mcap", "foxglove", "profiling"]
+dependencies = [
+    "mcap>=1.0",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "plotly>=5.18",
+    "typer>=0.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "ruff>=0.4"]
+
+[project.scripts]
+rm-latency = "rm_latency.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rm_latency"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# typer/FastAPI 的参数声明 API 就是在默认值里调用，B008 属误报
+"src/rm_latency/cli.py" = ["B008"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

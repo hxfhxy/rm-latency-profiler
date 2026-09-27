@@ -1,0 +1,14 @@
+# 大文件与产物不入库
+samples/
+*.mcap
+report/
+
+.venv/
+__pycache__/
+*.egg-info/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# 录像产物
+*-latency-report.html
