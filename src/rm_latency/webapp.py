@@ -62,12 +62,20 @@ class _RunStore:
 _RUNS = _RunStore()
 
 
-def create_app() -> FastAPI:
+def create_app(example_path: Path | None = None) -> FastAPI:
     app = FastAPI(title="rm-latency-profiler", docs_url=None, redoc_url=None)
 
     @app.get("/")
     def index() -> FileResponse:
         return FileResponse(_STATIC_DIR / "index.html")
+
+    @app.api_route("/example.mcap", methods=["GET", "HEAD"])
+    def example() -> FileResponse:
+        # 演示/面试场景一键加载示例数据；未提供 --example 时前端不显示入口。
+        # HEAD 供前端探测入口是否显示（FastAPI 的 get() 不含 HEAD）。
+        if example_path is None or not example_path.exists():
+            raise HTTPException(status_code=404, detail="未提供示例数据")
+        return FileResponse(example_path, media_type="application/octet-stream")
 
     @app.get("/static/plotly.min.js")
     def plotly_js() -> Response:

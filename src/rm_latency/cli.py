@@ -118,6 +118,8 @@ def serve(
     host: str = typer.Option("127.0.0.1", help="监听地址；保持本机回环，勿暴露到局域网"),
     port: int = typer.Option(8321, help="监听端口"),
     no_browser: bool = typer.Option(False, "--no-browser", help="不自动打开浏览器"),
+    example: Path | None = typer.Option(None, "--example", exists=True, dir_okay=False,
+                                        help="提供一份示例录像，界面出现一键加载按钮"),
 ):
     """启动本地 Web 界面（交互式探索，比静态报告多视野缩放与多录像对比）。"""
     import threading
@@ -131,7 +133,7 @@ def serve(
     typer.echo(f"Web 界面：{url}（Ctrl+C 退出）")
     if not no_browser:
         threading.Timer(1.0, webbrowser.open, args=(url,)).start()
-    uvicorn.run(create_app(), host=host, port=port, log_level="warning")
+    uvicorn.run(create_app(example), host=host, port=port, log_level="warning")
 
 
 if __name__ == "__main__":

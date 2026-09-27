@@ -57,6 +57,7 @@
   <input type="file" id="mapfile" accept=".yaml,.yml,.json" hidden>
 </div>
 <div style="margin-top:.3rem"><button id="pickMap" class="chip">选择映射文件（可选）</button>
+  <button id="loadDemo" class="chip" style="display:none">加载示例数据</button>
   <span id="mapName" class="hint">未选择</span></div>
 
 <div id="err"></div>
@@ -103,6 +104,16 @@ fileInput.onchange = () => fileInput.files[0] && analyze(fileInput.files[0]);
 mapInput.onchange = () => {
   mappingFile = mapInput.files[0] || null;
   document.getElementById("mapName").textContent = mappingFile ? mappingFile.name : "未选择";
+};
+
+// 服务端带 --example 时显示一键演示入口
+fetch("/example.mcap", { method: "HEAD" }).then(res => {
+  if (res.ok) document.getElementById("loadDemo").style.display = "";
+}).catch(() => {});
+document.getElementById("loadDemo").onclick = async () => {
+  hideError();
+  const blob = await (await fetch("/example.mcap")).blob();
+  analyze(new File([blob], "example.mcap"));
 };
 ["dragover", "dragenter"].forEach(ev => drop.addEventListener(ev, e => {
   e.preventDefault(); drop.classList.add("drag");
@@ -276,19 +287,30 @@ function drawTimeline() {
   }, { displaylogo: false, responsive: true });
   const gd = document.getElementById("timeline");
   gd.removeAllListeners("plotly_relayout");
-  gd.removeAllListeners("plotly_click");
   gd.on("plotly_relayout", () => {
     const range = currentRange();
     drawPercentiles(range); drawViewTable(range);
   });
-  // 点击时序图 → 画面跳到该时刻（视频与延迟数据共用同一相对秒时间轴）
-  gd.on("plotly_click", (ev) => {
-    const v = runs[active].data.video;
-    if (!v || !v.count) return;
-    const x = ev.points && ev.points.length ? ev.points[0].x : null;
-    if (x == null) return;
-    loadFrame(nearestFrame(x));
-  });
+  // 点击时间轴任意位置 → 画面跳到该时刻。
+  // 不用 plotly_click：它只在数据点附近触发；像素坐标换算对空白处同样有效。
+  if (!gd.__seekBound) {
+    gd.__seekBound = true;
+    let downX = 0, downY = 0;
+    gd.addEventListener("mousedown", (e) => { downX = e.clientX; downY = e.clientY; });
+    gd.addEventListener("click", (ev) => {
+      const v = runs[active] && runs[active].data.video;
+      if (!v || !v.count) return;
+      if (Math.hypot(ev.clientX - downX, ev.clientY - downY) > 5) return; // 缩放拖拽不算点击
+      const full = gd._fullLayout;
+      if (!full || !full.xaxis || !full.xaxis.range) return;
+      const rect = gd.getBoundingClientRect();
+      const frac = (ev.clientX - rect.left - full.margin.l) /
+        (gd.clientWidth - full.margin.l - full.margin.r);
+      if (frac < 0 || frac > 1) return;
+      const [r0, r1] = full.xaxis.range;
+      loadFrame(nearestFrame(r0 + frac * (r1 - r0)));
+    });
+  }
 }
 
 function drawPercentiles(range) {
@@ -318,8 +340,9 @@ function drawViewTable(range) {
       p50: quantile(v, .5), p95: quantile(v, .95), p99: quantile(v, .99),
       max: Math.max(...v.filter(x => x != null), -Infinity),
     };
-    const all = seg[key];
-    const cell = (a, b) => `<td class="num">${fmt(all[a])} → <b>${fmt(live[a])}</b></td>`;
+    // 时序数组键带 _ms 后缀；服务端 segments 键没有——不能直接用 key 查 seg
+    const all = seg[key.replace("_ms", "")];
+    const cell = (a) => `<td class="num">${fmt(all[a])} → <b>${fmt(live[a])}</b></td>`;
     return `<tr><th>${label}</th>${cell("p50")}${cell("p95")}${cell("p99")}${cell("max")}</tr>`;
   }).join("");
   const scope = range ? `视野 ${range[0].toFixed(1)}–${range[1].toFixed(1)} s` : "全程";
