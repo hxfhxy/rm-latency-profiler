@@ -26,7 +26,8 @@ _FIG_LAYOUT = {
 
 
 def build_report(df: pd.DataFrame, stats: dict, percentiles: pd.DataFrame,
-                 serial_deltas: pd.DataFrame | None, source: Path) -> str:
+                 serial_deltas: pd.DataFrame | None, source: Path,
+                 attribution: dict | None = None) -> str:
     """组装完整 HTML 报告字符串。"""
     figures: list[go.Figure] = [
         _timeline_figure(df),
@@ -47,10 +48,13 @@ def build_report(df: pd.DataFrame, stats: dict, percentiles: pd.DataFrame,
             )
         )
 
-    return _assemble_html(
+    return assemble_html(
         title=f"Latency Report — {source.name}",
-        summary_rows=_summary_rows(df, stats, percentiles, serial_deltas),
+        summary_rows=_summary_rows(df, stats, percentiles, serial_deltas, attribution),
         body="\n".join(divs),
+        note="分段含义：capture→submit = 图像从采集回调到任务提交（传输/排队）；"
+             "submit→finish = 本帧检测+预测+解算（计算）；端到端不含串口写出与下位机执行。"
+             "分位数为全程聚合；时序图定位异常发生的时刻。",
     )
 
 
@@ -146,7 +150,8 @@ def _serial_figure(df: pd.DataFrame, serial_deltas: pd.DataFrame) -> go.Figure:
 
 
 def _summary_rows(df: pd.DataFrame, stats: dict, percentiles: pd.DataFrame,
-                  serial_deltas: pd.DataFrame | None) -> list[tuple[str, str]]:
+                  serial_deltas: pd.DataFrame | None,
+                  attribution: dict | None = None) -> list[tuple[str, str]]:
     e2e = percentiles.loc["end_to_end"]
     rows = [
         ("帧数", f"{len(df)}"),
@@ -155,17 +160,32 @@ def _summary_rows(df: pd.DataFrame, stats: dict, percentiles: pd.DataFrame,
         ("端到端 capture→finish",
          f"p50 {e2e['p50']:.1f} / p95 {e2e['p95']:.1f} / p99 {e2e['p99']:.1f} / "
          f"max {e2e['max']:.1f} ms"),
-        ("疑似掉帧", f"{stats['gaps']} 次，累计 {stats.get('gap_total_ms', 0):.0f} ms"),
+        ("疑似掉帧", _gap_row(stats, attribution)),
     ]
     if serial_deltas is None or not serial_active_any(serial_deltas):
         rows.append(("串口下行", "整场无指令写出（未接下位机或指令被上游拦截）"))
     return rows
 
 
-def _assemble_html(title: str, summary_rows: list[tuple[str, str]], body: str) -> str:
+def _gap_row(stats: dict, attribution: dict | None) -> str:
+    text = f"{stats['gaps']} 次，累计 {stats.get('gap_total_ms', 0):.0f} ms"
+    if not stats["gaps"] or attribution is None:
+        return text
+    parts = []
+    for key, label in (("compute_overload", "计算过载"), ("capture_side", "采集侧"),
+                       ("unknown", "无法归因")):
+        if attribution.get(key):
+            parts.append(f"{label} {attribution[key]}")
+    return text + "（" + " / ".join(parts) + "）" if parts else text
+
+
+def assemble_html(title: str, summary_rows: list[tuple[str, str]], body: str,
+                  note: str = "") -> str:
+    """报告与对比页共用的单文件 HTML 组装器（plotly.js 由首图内联）。"""
     summary_html = "".join(
         f"<tr><td>{k}</td><td><b>{v}</b></td></tr>" for k, v in summary_rows
     )
+    note_html = f'<p class="note">{note}</p>' if note else ""
     return f"""<!DOCTYPE html>
 <html lang="zh">
 <head>
@@ -179,15 +199,16 @@ def _assemble_html(title: str, summary_rows: list[tuple[str, str]], body: str) -
   td, th {{ border: 1px solid #ddd; padding: 0.4rem 0.9rem; font-size: 0.92rem; }}
   td:first-child {{ color: #666; }}
   .note {{ color: #888; font-size: 0.85rem; }}
+  .good {{ color: #1a7f37; font-weight: 600; }}
+  .bad {{ color: #c62828; font-weight: 600; }}
+  .muted {{ color: #999; }}
 </style>
 </head>
 <body>
 <h1>{title}</h1>
 <h2>摘要</h2>
 <table>{summary_html}</table>
-<p class="note">分段含义：capture→submit = 图像从采集回调到任务提交（传输/排队）；
-submit→finish = 本帧检测+预测+解算（计算）；端到端不含串口写出与下位机执行。
-分位数为全程聚合；时序图定位异常发生的时刻。</p>
+{note_html}
 {body}
 </body>
 </html>"""

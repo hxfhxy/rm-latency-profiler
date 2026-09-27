@@ -68,6 +68,32 @@ def frame_interval_stats(df: pd.DataFrame) -> dict:
     }
 
 
+def gap_attribution(df: pd.DataFrame) -> dict:
+    """把疑似掉帧归因到最可能的原因（启发式，诚实标注为归因而非证明）。
+
+    判据：空洞出现在第 i 帧与第 i-1 帧之间时，看第 i-1 帧的计算耗时
+    （submit→finish）是否超过稳态帧周期（间隔中位数）：
+    - 超周期 → 计算过载：管线还在算上一帧，新帧被丢（常见于丢新语义的有界队列）
+    - 未超 → 采集侧断流：上一帧算得过来，是相机/传输没把帧送进来
+    """
+    causes = {"compute_overload": 0, "capture_side": 0, "unknown": 0}
+    intervals = df["interval_ms"]
+    median = float(intervals.median()) if len(intervals) else 0.0
+    if median <= 0:
+        return {**causes, "total": 0}
+
+    compute = df["submit_to_finish_ms"]
+    for i in np.flatnonzero((intervals > max(GAP_FACTOR * median, 1.0)).to_numpy()):
+        if i == 0 or pd.isna(compute.iloc[i - 1]):
+            causes["unknown"] += 1
+        elif float(compute.iloc[i - 1]) > median:
+            causes["compute_overload"] += 1
+        else:
+            causes["capture_side"] += 1
+    total = causes["compute_overload"] + causes["capture_side"] + causes["unknown"]
+    return {**causes, "total": int(total)}
+
+
 def serial_tx_deltas(df: pd.DataFrame) -> pd.DataFrame:
     """累计串口计数 -> 每帧增量；计数器回退（设备重启）按 0 处理并计入 resets。"""
     out = pd.DataFrame(index=df.index)

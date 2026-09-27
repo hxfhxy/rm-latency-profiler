@@ -52,6 +52,9 @@ def test_analyze_returns_expected_stats(client, mcap_bytes):
     assert len(data["timeline"]["t"]) == N_FRAMES
     assert len(data["timeline"]["end_to_end_ms"]) == N_FRAMES
     assert isinstance(data["gap_indices"], list)
+    assert len(data["gap_causes"]) == len(data["gap_indices"])
+    # 合成录像时间戳均匀：无掉帧，归因总数为 0
+    assert data["gap_attribution"]["total"] == 0
 
 
 def test_analyze_downsamples_large_input(client, tmp_path):

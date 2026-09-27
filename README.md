@@ -7,8 +7,11 @@ RoboMaster 视觉链路**黑盒延迟分析工具**：不吃队内代码一行�
 
 - **MCAP 离线分析**：读 Foxglove 调试录像里的逐帧遥测，输出三段延迟
   （capture→submit 传输段 / submit→finish 计算段 / 端到端）的
-  p50/p95/p99 分位数、全程时序图、分布直方图、帧率与掉帧检测、
-  串口下行增量时间线，汇总为一份单文件 HTML 报告（离线可打开）。
+  p50/p95/p99 分位数、全程时序图、分布直方图、帧率与掉帧检测（含
+  **掉帧归因**：计算过载 vs 采集侧断流）、串口下行增量时间线，汇总为
+  单文件 HTML 报告（离线可打开）。
+- **A/B 对比报告**：`compare` 命令对两份录像出 delta 表（改善绿/恶化红）
+  与对齐叠加曲线，优化改动一键验收。
 - **交互式 Web 界面**：`rm-latency serve` 拖入录像即分析——缩放时序图，
   分位数随视野实时重算；多份录像叠加对比（优化前后的 A/B 验收）；
   **画面回放与延迟时序共用同一时间轴**，点哪里看哪里，延迟尖峰瞬间的
@@ -38,6 +41,9 @@ rm-latency report run.mcap -o report/
 
 # 导出逐帧数据 CSV，便于自行分析
 rm-latency export run.mcap -o frames.csv
+
+# A/B 对比（优化验收：同一段输入录像跑两遍，中间只改被测项）
+rm-latency compare before.mcap after.mcap -o report/
 ```
 
 一份合成录像生成的[示例报告](docs/example-report.html)可以直接用浏览器打开看效果。
@@ -92,9 +98,10 @@ CI 在 push/PR 时跑 ruff + pytest（Python 3.10 / 3.12 矩阵）。
 
 - [x] MCAP 摄取 + 逐帧遥测表
 - [x] 三段延迟分位数 + HTML 报告
-- [x] 帧率/抖动/掉帧检测 + 串口下行时间线
+- [x] 帧率/抖动/掉帧检测 + 掉帧归因 + 串口下行时间线
 - [x] 跨队字段映射（YAML）
 - [x] 交互式 Web 界面（视野缩放重算、多录像对比、画面回放）
+- [x] A/B 对比报告（delta 表 + 叠加曲线）
 - [ ] 发 PyPI / GitHub Release
 
 ## License

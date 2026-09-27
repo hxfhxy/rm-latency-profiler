@@ -75,6 +75,39 @@ def test_serial_deltas(df):
     assert analysis.serial_active(df)
 
 
+# ---------- 掉帧归因 ----------
+
+def _df_with_one_gap(tmp_path, overload_before_gap: bool):
+    """构造恰好一个掉帧：删一行制造空洞，前帧计算耗时按需超/不超周期。
+
+    基线用 compute=2ms < period=5ms，保证"未抬高时归因为采集侧"成立
+    （默认 compute=10ms 会污染判断）。
+    """
+    path = tmp_path / ("over.mcap" if overload_before_gap else "cap.mcap")
+    write_synthetic(path, n_frames=60, compute_ms=2.0)
+    df = ingest.load_frames(path).drop(index=20).reset_index(drop=True)
+    if overload_before_gap:
+        # 空洞前一帧（新表索引 19，原第 19 帧）计算耗时抬高到 8ms > 周期 5ms
+        df.loc[19, "finish_ns"] = df.loc[19, "submit_ns"] + int(8 * 1e6)
+    return analysis.with_segments(df)
+
+
+def test_gap_attribution_compute_overload(tmp_path):
+    causes = analysis.gap_attribution(_df_with_one_gap(tmp_path, True))
+    assert causes["total"] == 1
+    assert causes["compute_overload"] == 1
+    assert causes["capture_side"] == 0
+
+
+def test_gap_attribution_capture_side(tmp_path):
+    causes = analysis.gap_attribution(_df_with_one_gap(tmp_path, False))
+    assert causes["total"] == 1
+    # 毛刺帧（i%25==0）计算 3 倍，若恰好在空洞前一帧会污染归因；
+    # 原 19 帧无毛刺（19%25!=0），因此应为采集侧
+    assert causes["capture_side"] == 1
+    assert causes["compute_overload"] == 0
+
+
 def test_serial_inactive_detected(tmp_path):
     path = tmp_path / "noserial.mcap"
     write_synthetic(path, n_frames=20, serial_written=False)

@@ -90,6 +90,11 @@ const SEGMENTS = [
   ["submit_to_finish_ms", "submit→finish", "#ef553b"],
   ["end_to_end_ms", "端到端", "#444"],
 ];
+const GAP_STYLE = {
+  compute_overload: { label: "掉帧·计算过载", color: "#d62728" },
+  capture_side: { label: "掉帧·采集侧", color: "#ff7f0e" },
+  unknown: { label: "掉帧·未归因", color: "#999" },
+};
 const runs = [];
 let active = -1;
 
@@ -194,7 +199,7 @@ function renderDash() {
     ["帧数", d.frames + (d.downsampled ? "（图表抽稀）" : "")],
     ["帧率", fmt(d.fps) + " fps"],
     ["抖动", "±" + fmt(d.jitter_ms, 2) + " ms"],
-    ["疑似掉帧", d.gaps + " 次"],
+    ["疑似掉帧", gapCard(d)],
     ["端到端 p50", fmt(seg.end_to_end.p50) + " ms"],
     ["端到端 p99", fmt(seg.end_to_end.p99) + " ms"],
     ["串口下行", d.serial_active ? "有写出" : "无"],
@@ -205,6 +210,13 @@ function renderDash() {
   drawPercentiles(null);
   drawViewTable(null);
   drawHist();
+}
+
+function gapCard(d) {
+  const a = d.gap_attribution;
+  if (!d.gaps || !a || !a.total) return d.gaps + " 次";
+  const pct = n => Math.round((100 * n) / (a.total || 1));
+  return `${d.gaps} 次（计算 ${pct(a.compute_overload)}% / 采集 ${pct(a.capture_side)}%）`;
 }
 
 // ---------- 视频面板：画面与延迟时序共用同一时间轴 ----------
@@ -271,9 +283,19 @@ function drawTimeline() {
         line: { color, width: 1 }, hovertemplate: "%{y:.2f} ms @ %{x:.2f}s<extra>" + label + "</extra>",
       }));
       const gi = tl.gap_indices || [];
-      if (gi.length) traces.push({
-        x: gi.map(k => tl.t[k]), y: gi.map(k => tl.end_to_end_ms[k]),
-        name: "疑似掉帧", mode: "markers", marker: { color: "#d62728", size: 5, symbol: "x" },
+      const gc = tl.gap_causes || [];
+      const byCause = {};
+      gi.forEach((rowIdx, k) => {
+        const cause = gc[k] || "unknown";
+        (byCause[cause] = byCause[cause] || []).push(rowIdx);
+      });
+      Object.entries(byCause).forEach(([cause, rows]) => {
+        const style = GAP_STYLE[cause] || GAP_STYLE.unknown;
+        traces.push({
+          x: rows.map(k => tl.t[k]), y: rows.map(k => tl.end_to_end_ms[k]),
+          name: style.label, mode: "markers",
+          marker: { color: style.color, size: 5, symbol: "x" },
+        });
       });
     } else {
       traces.push({ x: tl.t, y: tl.end_to_end_ms, name: r.name + "（端到端）",

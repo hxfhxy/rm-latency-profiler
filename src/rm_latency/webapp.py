@@ -16,6 +16,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 
@@ -139,7 +140,9 @@ def create_app(example_path: Path | None = None) -> FastAPI:
                     for name, row in percentiles.iterrows()
                 },
                 "timeline": _timeline_payload(df),
-                "gap_indices": _gap_indices(df),
+                "gap_indices": [i for i, _ in _gap_marks(df)],
+                "gap_causes": [c for _, c in _gap_marks(df)],
+                "gap_attribution": analysis.gap_attribution(df),
                 "video": video,
             }
         )
@@ -239,22 +242,33 @@ def _stride(n: int) -> int:
     return max(1, math.ceil(n / _MAX_POINTS))
 
 
-def _gap_indices(df) -> list[int]:
-    """疑似掉帧行号（interval 超判据），前端叠加标记。"""
+def _gap_marks(df) -> list[tuple[int, str]]:
+    """疑似掉帧行号 + 归因（compute_overload / capture_side / unknown）。"""
     intervals = df["interval_ms"]
     median = float(intervals.median()) if len(intervals) else 0.0
     if median <= 0:
         return []
-    return np.flatnonzero((intervals > max(analysis.GAP_FACTOR * median, 1.0)).to_numpy()).tolist()
+    compute = df["submit_to_finish_ms"]
+    marks = []
+    for i in np.flatnonzero((intervals > max(analysis.GAP_FACTOR * median, 1.0)).to_numpy()):
+        if i == 0 or pd.isna(compute.iloc[i - 1]):
+            marks.append((int(i), "unknown"))
+        elif float(compute.iloc[i - 1]) > median:
+            marks.append((int(i), "compute_overload"))
+        else:
+            marks.append((int(i), "capture_side"))
+    return marks
 
 
 def _timeline_payload(df) -> dict:
     stride = _stride(len(df))
     view = df.iloc[::stride]
     t = (view["stamp_ns"].to_numpy() - df["stamp_ns"].iloc[0]) / 1e9
+    marks = _gap_marks(df)
     payload = {
         "t": [round(float(v), 4) for v in t],
-        "gap_indices": [i // stride for i in _gap_indices(df)],
+        "gap_indices": [i // stride for i, _ in marks],
+        "gap_causes": [c for _, c in marks],
     }
     for col in ("capture_to_submit_ms", "submit_to_finish_ms", "end_to_end_ms"):
         payload[col] = [_finite_or_none(v, ndigits=4) for v in view[col]]

@@ -86,9 +86,11 @@ def report(
         stats = analysis.frame_interval_stats(df)
         percentiles = analysis.percentile_table(df)
         deltas = analysis.serial_tx_deltas(df)
+        attribution = analysis.gap_attribution(df)
 
         out_file = out / f"{path.stem}-latency-report.html"
-        html = report_mod.build_report(df, stats, percentiles, deltas, path)
+        html = report_mod.build_report(df, stats, percentiles, deltas, path,
+                                       attribution=attribution)
         out_file.write_text(html, encoding="utf-8")
 
         e2e = percentiles.loc["end_to_end"]
@@ -134,6 +136,34 @@ def serve(
     if not no_browser:
         threading.Timer(1.0, webbrowser.open, args=(url,)).start()
     uvicorn.run(create_app(example), host=host, port=port, log_level="warning")
+
+
+@app.command()
+def compare(
+    before: Path = typer.Argument(exists=True, dir_okay=False, help="改动前的录像"),
+    after: Path = typer.Argument(exists=True, dir_okay=False, help="改动后的录像"),
+    out: Path = typer.Option("report", "--out", "-o", help="输出目录"),
+    mapping_file: Path | None = typer.Option(None, "--mapping", "-m", help="字段映射 YAML/JSON"),
+):
+    """生成两份录像的 A/B 对比报告（优化验收用；前提：输入相同、只改被测项）。"""
+    from . import compare as compare_mod
+
+    mapping = _load_mapping_opt(mapping_file)
+    df_before = analysis.with_segments(ingest.load_frames(before, mapping))
+    df_after = analysis.with_segments(ingest.load_frames(after, mapping))
+
+    out.mkdir(parents=True, exist_ok=True)
+    out_file = out / f"{before.stem}-vs-{after.stem}-compare.html"
+    html = compare_mod.build_compare(df_before, df_after, before, after)
+    out_file.write_text(html, encoding="utf-8")
+
+    e2e_before = analysis.percentile_table(df_before).loc["end_to_end"]
+    e2e_after = analysis.percentile_table(df_after).loc["end_to_end"]
+    typer.echo(f"对比报告已生成：{out_file}")
+    typer.echo(
+        f"端到端 p50 {e2e_before['p50']:.1f} → {e2e_after['p50']:.1f} ms | "
+        f"p99 {e2e_before['p99']:.1f} → {e2e_after['p99']:.1f} ms"
+    )
 
 
 if __name__ == "__main__":
