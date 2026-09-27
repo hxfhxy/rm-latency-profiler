@@ -1,10 +1,10 @@
 """MCAP 摄取：通道发现、遥测消息解析、帧表构建。
 
 设计决策（详见 docs/decisions.md）：
-- 遥测通道按 schema 内容识别（含 capture_to_submit_ms 即命中），
-  不写死通道名/版本号，任何队的同形遥测都能接。
+- 遥测通道按 schema 指纹内容识别（默认含 capture_to_submit_ms 即命中），
+  不写死通道名/版本号，任何队的同形遥测都能接；字段路径可经映射文件适配。
 - 纳秒字段在遥测 JSON 里是字符串（规避 JSON 安全整数问题），读取时统一转 int64。
-- serial_tx / debugger 计数是累计值，原样保留，差分在 analysis 层做。
+- serial_tx 计数是累计值，原样保留，差分在 analysis 层做。
 """
 
 from __future__ import annotations
@@ -15,33 +15,24 @@ from pathlib import Path
 import pandas as pd
 from mcap.reader import make_reader
 
-# 遥测 schema 的指纹字段：出现即认定该 channel 承载逐帧遥测
-_TELEMETRY_FINGERPRINT = "capture_to_submit_ms"
+from .mapping import DEFAULT_MAPPING, TelemetryMapping, resolve
 
-# JSON 遥测里关心的字段 -> DataFrame 列名
-_TIMING_INT_FIELDS = ("capture_ns", "submit_ns", "finish_ns")
-_HEADER_INT_FIELDS = ("seq", "stamp_ns", "recv_ns")
-_SERIAL_TX_FIELDS = (
-    "queued",
-    "queue_drops",
-    "popped",
-    "encode_rejected",
-    "written",
-    "bytes_written",
-    "write_failures",
-)
-_DEBUGGER_FIELDS = ("attempted", "accepted", "consumed", "overwrites", "image_drops")
+# 需要转 int64 的纳秒字段（映射里的规范名）；其余字段同样走 _to_int 容错
+_NS_FIELDS = frozenset({"seq", "stamp_ns", "recv_ns", "capture_ns", "submit_ns", "finish_ns"})
 
 
 class TelemetryNotFoundError(RuntimeError):
     """文件里找不到符合指纹的遥测通道。"""
 
 
-def find_telemetry_channel(path: str | Path) -> tuple[int, str]:
+def find_telemetry_channel(
+    path: str | Path, mapping: TelemetryMapping | None = None
+) -> tuple[int, str]:
     """扫描 summary 里的 schema，返回 (channel_id, topic)。
 
     按 schema 文本内容识别而非通道名：团队改名、版本升级不影响识别。
     """
+    mapping = mapping or DEFAULT_MAPPING
     with open(path, "rb") as f:
         summary = make_reader(f).get_summary()
         if summary is None:
@@ -51,22 +42,22 @@ def find_telemetry_channel(path: str | Path) -> tuple[int, str]:
             if schema is None or schema.encoding != "jsonschema":
                 continue
             text = schema.data.decode("utf-8", errors="replace")
-            if _TELEMETRY_FINGERPRINT in text:
+            if mapping.fingerprint in text:
                 return channel.id, channel.topic
     raise TelemetryNotFoundError(
-        "未找到遥测通道：没有任何 jsonschema 通道包含指纹字段 "
-        f"{_TELEMETRY_FINGERPRINT!r}；确认这是本工具支持的调试录像"
+        f"未找到遥测通道：没有任何 jsonschema 通道包含指纹字段 {mapping.fingerprint!r}；"
+        "确认录像格式，或在映射文件里指定本队遥测的 fingerprint"
     )
 
 
-def load_frames(path: str | Path) -> pd.DataFrame:
+def load_frames(path: str | Path, mapping: TelemetryMapping | None = None) -> pd.DataFrame:
     """读取整份录像的遥测消息，构建逐帧 DataFrame。
 
-    一行 = 一帧；列覆盖 header/timing/serial_tx/debugger 中与本工具相关的字段。
-    时间列单位 ns，int64；缺失字段按 NaN 处理（容错部分旧版本录像）。
+    一行 = 一帧，一列 = 一个规范字段；缺失字段按 NaN 处理（容错旧版录像）。
     """
+    mapping = mapping or DEFAULT_MAPPING
     path = Path(path)
-    _, topic = find_telemetry_channel(path)
+    _, topic = find_telemetry_channel(path, mapping)
     rows: list[dict] = []
 
     with open(path, "rb") as f:
@@ -78,19 +69,8 @@ def load_frames(path: str | Path) -> pd.DataFrame:
                 continue  # 单条损坏不致命，跳过并在行数上可见
 
             row: dict = {"log_time_ns": message.log_time, "topic": topic}
-            header = data.get("header") or {}
-            timing = data.get("timing") or {}
-            serial_tx = data.get("serial_tx") or {}
-            debugger = data.get("debugger") or {}
-
-            for key in _HEADER_INT_FIELDS:
-                row[key] = _to_int(header.get(key))
-            for key in _TIMING_INT_FIELDS:
-                row[key] = _to_int(timing.get(key))
-            for key in _SERIAL_TX_FIELDS:
-                row[key] = _to_int(serial_tx.get(key))
-            for key in _DEBUGGER_FIELDS:
-                row[key] = _to_int(debugger.get(key))
+            for canonical, dotted in mapping.paths.items():
+                row[canonical] = _to_int(resolve(data, dotted))
             rows.append(row)
 
     if not rows:

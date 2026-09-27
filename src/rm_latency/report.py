@@ -13,6 +13,8 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.io import to_html
 
+from .analysis import percentile_table
+
 # 时序曲线降采样阈值：超过该点数按等步长抽稀，浏览器渲染才不卡
 _MAX_TIMELINE_POINTS = 5000
 
@@ -107,8 +109,6 @@ def _histogram_figure(df: pd.DataFrame) -> go.Figure:
 
 
 def percentile_table_for_axis(df: pd.DataFrame) -> dict:
-    from .analysis import percentile_table
-
     row = percentile_table(df).loc["end_to_end"]
     return {int(q[1:]): row[q] for q in ("p50", "p95", "p99")}
 

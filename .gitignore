@@ -1,7 +1,9 @@
-# 大文件与产物不入库
+# 大文件与产物不入库；示例刻意保留，供陌生人开箱试用
 samples/
 *.mcap
+!docs/example.mcap
 report/
+*.frames.csv
 
 .venv/
 __pycache__/
@@ -12,3 +14,4 @@ dist/
 
 # 录像产物
 *-latency-report.html
+!docs/example-report.html

@@ -18,15 +18,41 @@ RoboMaster 视觉链路**黑盒延迟分析工具**：不吃队内代码一行�
 ```bash
 pip install -e .
 
-# 看一眼录像概况
+# 看一眼录像概况（--json 可机器读取）
 rm-latency inspect run.mcap
 
-# 生成 HTML 报告
+# 生成 HTML 报告（支持一次多份录像）
 rm-latency report run.mcap -o report/
 # -> report/run-latency-report.html
+
+# 导出逐帧数据 CSV，便于自行分析
+rm-latency export run.mcap -o frames.csv
 ```
 
-## 遥测格式约定
+一份合成录像生成的[示例报告](docs/example-report.html)可以直接用浏览器打开看效果。
+
+## 接入别的队伍的遥测格式
+
+通道按 schema 指纹自动发现，字段路径可经映射文件适配——不改工具代码：
+
+```yaml
+# my-team.yaml
+fingerprint: "snap"          # 本队 jsonschema 文本中必然出现的字符串
+fields:                      # 规范名: 消息内点分路径（未列出的回落默认值）
+  stamp_ns: snap.t_cam
+  capture_ns: snap.t_cam
+  submit_ns: snap.t_in
+  finish_ns: snap.t_out
+```
+
+```bash
+rm-latency report run.mcap -m my-team.yaml
+```
+
+规范字段名全集见 `src/rm_latency/mapping.py` 的 `DEFAULT_FIELD_PATHS`；
+分析至少需要 `stamp_ns / capture_ns / submit_ns / finish_ns` 四个字段。
+
+## 遥测格式约定（默认 ACE 格式）
 
 工具按 schema 内容自动发现遥测通道：任何 jsonschema 编码的通道，只要包含
 `capture_to_submit_ms` 字段即被识别。逐帧消息需要：
@@ -48,6 +74,17 @@ pip install -e ".[dev]"
 pytest          # 全部基于合成录像，不需要真实数据
 ruff check .
 ```
+
+CI 在 push/PR 时跑 ruff + pytest（Python 3.10 / 3.12 矩阵）。
+
+## Roadmap
+
+- [x] MCAP 摄取 + 逐帧遥测表
+- [x] 三段延迟分位数 + HTML 报告
+- [x] 帧率/抖动/掉帧检测 + 串口下行时间线
+- [x] 跨队字段映射（YAML）
+- [ ] 视频物理测延迟：慢动作视频测含下位机的真实端到端延迟
+- [ ] 发 PyPI / GitHub Release
 
 ## License
 
