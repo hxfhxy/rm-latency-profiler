@@ -1,13 +1,18 @@
 """本地 Web 界面后端：FastAPI 分析服务。
 
-设计决策（D9）：本地 Web 而非桌面 GUI——分析逻辑零复制复用 ingest/analysis，
+设计决策（D9/D10）：本地 Web 而非桌面 GUI——分析逻辑零复制复用 ingest/analysis，
 浏览器是分析工具的行业形态，且规避无 sudo 环境的 Qt/打包问题。
+视频回放走逐帧 JPEG 接口而非 MP4 转码：与延迟时序共用同一时间轴，
+帧级对齐是复盘的核心价值，转码做不到。
+
 安全边界：默认只绑定 127.0.0.1，这是单人本机工具，不是网络服务。
+运行注册表持有已分析录像的图像字节（有上限、LRU 淘汰），进程退出即释放。
 """
 
 from __future__ import annotations
 
 import tempfile
+from collections import OrderedDict
 from pathlib import Path
 
 import numpy as np
@@ -19,8 +24,42 @@ from .mapping import MappingError, load_mapping
 
 # 时序数组下发上限：超过则等步长抽稀（前端图表渲染上限，分析统计仍用全量）
 _MAX_POINTS = 50_000
+# 视频帧缓存上限：帧数限制，超出按顺序截断（复盘优先看前段）
+_MAX_VIDEO_FRAMES = 2_400
+_MAX_RUNS = 3
 
 _STATIC_DIR = Path(__file__).parent / "static"
+_IMAGE_SCHEMA = "foxglove.CompressedImage"
+
+
+class _RunStore:
+    """已分析录像的会话内注册表：帧字节缓存 + LRU 淘汰。"""
+
+    def __init__(self) -> None:
+        self._runs: OrderedDict[int, dict] = OrderedDict()
+        self._next_id = 1
+
+    def put(self, frames: list[bytes], times: list[float], media_type: str) -> int:
+        run_id = self._next_id
+        self._next_id += 1
+        self._runs[run_id] = {
+            "frames": frames, "times": times, "media_type": media_type,
+        }
+        while len(self._runs) > _MAX_RUNS:
+            self._runs.popitem(last=False)
+        return run_id
+
+    def frame(self, run_id: int, index: int) -> tuple[bytes, str]:
+        try:
+            run = self._runs[run_id]
+        except KeyError:
+            raise HTTPException(status_code=404, detail="录像会话已过期，请重新上传") from None
+        if not 0 <= index < len(run["frames"]):
+            raise HTTPException(status_code=404, detail=f"帧号越界：{index}")
+        return run["frames"][index], run["media_type"]
+
+
+_RUNS = _RunStore()
 
 
 def create_app() -> FastAPI:
@@ -42,7 +81,7 @@ def create_app() -> FastAPI:
         file: UploadFile = File(...),
         mapping: UploadFile | None = File(None),
     ) -> JSONResponse:
-        """上传一份 MCAP（可选映射文件），返回摘要 + 全量时序数据。
+        """上传一份 MCAP（可选映射文件），返回摘要 + 全量时序数据 + 视频元数据。
 
         分位数在前端对缩放区间实时重算，因此必须下发逐帧数组而非预聚合。
         """
@@ -70,12 +109,13 @@ def create_app() -> FastAPI:
                 df = analysis.with_segments(ingest.load_frames(tmp_path, mapping_obj))
             except ingest.TelemetryNotFoundError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+            video = _extract_video(tmp_path, df)
         finally:
             tmp_path.unlink(missing_ok=True)
 
         stats = analysis.frame_interval_stats(df)
         percentiles = analysis.percentile_table(df)
-        gaps = _gap_indices(df)
 
         return JSONResponse(
             {
@@ -91,11 +131,98 @@ def create_app() -> FastAPI:
                     for name, row in percentiles.iterrows()
                 },
                 "timeline": _timeline_payload(df),
-                "gap_indices": gaps,
+                "gap_indices": _gap_indices(df),
+                "video": video,
             }
         )
 
+    @app.get("/api/frame/{run_id}/{index}")
+    def frame(run_id: int, index: int) -> Response:
+        data, media_type = _RUNS.frame(run_id, index)
+        return Response(
+            content=data,
+            media_type=media_type,
+            headers={"Cache-Control": "immutable, max-age=86400"},
+        )
+
     return app
+
+
+def _extract_video(path: Path, df) -> dict | None:
+    """提取图像通道到会话缓存，返回视频元数据；没有图像通道返回 None。
+
+    超过帧数上限时按等步长抽稀覆盖**全时段**（复盘时间轴必须完整，
+    精度损失换完整性），而不是从头截断——截断会让时间轴尾部点不出画面。
+
+    时间对齐：图像消息的 log_time 是墙钟域，遥测 stamp_ns 是运行时单调域。
+    两个域的偏移取遥测消息的 median(log_time - stamp)（同一时刻记录，偏移近似恒定），
+    图像帧时间 = img_log_time - offset，再换算到与时间轴一致的相对秒。
+    """
+    topic = _find_image_topic(path)
+    if topic is None:
+        return None
+
+    try:
+        offsets = (df["log_time_ns"] - df["stamp_ns"]).dropna()
+        align_offset = float(offsets.median()) if len(offsets) else 0.0
+    except KeyError:
+        align_offset = 0.0
+
+    from foxglove_schemas_protobuf.CompressedImage_pb2 import CompressedImage
+    from mcap.reader import make_reader
+
+    # 第一遍只数帧定步长（不解码 protobuf）；第二遍按步长取帧
+    total = 0
+    with open(path, "rb") as f:
+        for _ in make_reader(f).iter_messages(topics=[topic]):
+            total += 1
+    if total == 0:
+        return None
+    stride = max(1, -(-total // _MAX_VIDEO_FRAMES))  # ceil 除法
+
+    frames: list[bytes] = []
+    stamps: list[int] = []
+    media_type = "image/jpeg"
+    with open(path, "rb") as f:
+        for i, (_schema, _channel, message) in enumerate(
+            make_reader(f).iter_messages(topics=[topic])
+        ):
+            if i % stride != 0:
+                continue
+            img = CompressedImage.FromString(message.data)
+            media_type = f"image/{img.format or 'jpeg'}"
+            frames.append(img.data)
+            stamps.append(message.log_time)
+
+    first_stamp = float(df["stamp_ns"].iloc[0])
+    times = [round((s - align_offset - first_stamp) / 1e9, 4) for s in stamps]
+    run_id = _RUNS.put(frames, times, media_type)
+
+    # 播放帧率用图像帧自身的间隔中位数，别假设与遥测同帧率
+    ivals = np.diff(times)
+    fps = round(1.0 / float(np.median(ivals)), 2) if len(ivals) and np.median(ivals) > 0 else None
+    return {
+        "run_id": run_id,
+        "count": len(frames),
+        "stride": stride,
+        "downsampled": stride > 1,
+        "fps": fps,
+        "t": times,
+    }
+
+
+def _find_image_topic(path: Path) -> str | None:
+    from mcap.reader import make_reader
+
+    with open(path, "rb") as f:
+        summary = make_reader(f).get_summary()
+        if summary is None:
+            return None
+        for channel in summary.channels.values():
+            schema = summary.schemas.get(channel.schema_id)
+            if schema is not None and schema.name == _IMAGE_SCHEMA:
+                return channel.topic
+    return None
 
 
 def _stride(n: int) -> int:

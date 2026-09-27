@@ -22,6 +22,9 @@ _MIN_SCHEMA = b"""{
   }
 }"""
 
+# 32x32 白色 JPEG 夹具（ffmpeg 生成入库）：视频通道测试只需合法 JPEG 字节
+_TINY_JPEG = (Path(__file__).parent / "fixtures" / "tiny.jpg").read_bytes()
+
 
 def write_synthetic(
     path: Path,
@@ -30,11 +33,14 @@ def write_synthetic(
     transport_ms: float = 1.0,
     compute_ms: float = 10.0,
     serial_written: bool = False,
+    images: bool = False,
 ) -> None:
     """生成 n 帧已知延迟的合成遥测录像。
 
     第 i 帧的 capture_ns = i * period * 1e6（单调域），
     三段延迟 = 常数 + 每 25 帧一个 3 倍毛刺，用于验证分位数与掉帧检测。
+    images=True 时附带同帧率的 foxglove.CompressedImage 通道（墙钟域 log_time），
+    用于视频回放功能的测试。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "wb") as f:
@@ -42,8 +48,20 @@ def write_synthetic(
         writer.start()
         schema_id = writer.register_schema("ace.DebugFrame.v1", "jsonschema", _MIN_SCHEMA)
         channel_id = writer.register_channel("/ace/debug/auto_aim", "json", schema_id)
+        image_channel = None
+        if images:
+            from foxglove_schemas_protobuf.CompressedImage_pb2 import CompressedImage
+
+            img_schema_id = writer.register_schema(
+                "foxglove.CompressedImage", "protobuf",
+                b'{"type":"object"}',
+            )
+            image_channel = writer.register_channel(
+                "/ace/debug/camera/image", "protobuf", img_schema_id,
+            )
 
         written_cum = 0
+        wall_base = 1_700_000_000_000_000_000
         for i in range(n_frames):
             capture = int(i * period_ms * 1e6)
             transport = transport_ms * (3 if i % 25 == 0 else 1)
@@ -66,9 +84,16 @@ def write_synthetic(
                 "debugger": {"attempted": 1, "accepted": 1, "consumed": 1, "overwrites": 0,
                              "image_drops": 0},
             }
-            log_time = 1_700_000_000_000_000_000 + capture  # 伪造墙钟域
+            log_time = wall_base + capture  # 伪造墙钟域，与单调域偏移恒定
             writer.add_message(
                 channel_id, log_time=log_time, publish_time=log_time,
                 data=json.dumps(msg).encode(),
             )
+            if image_channel is not None:
+                img = CompressedImage(frame_id="camera_optical", format="jpeg")
+                img.data = _TINY_JPEG
+                writer.add_message(
+                    image_channel, log_time=log_time, publish_time=log_time,
+                    data=img.SerializeToString(),
+                )
         writer.finish()

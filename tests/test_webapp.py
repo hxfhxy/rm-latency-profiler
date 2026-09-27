@@ -91,3 +91,52 @@ def test_analyze_rejects_bad_mapping(client, mcap_bytes, tmp_path):
     )
     assert res.status_code == 422
     assert "映射文件错误" in res.json()["detail"]
+
+
+# ---------- 视频回放 ----------
+
+@pytest.fixture(scope="module")
+def video_mcap_bytes(tmp_path_factory) -> bytes:
+    path = tmp_path_factory.mktemp("web") / "video.mcap"
+    write_synthetic(path, n_frames=50, images=True)
+    return path.read_bytes()
+
+
+def test_analyze_extracts_video(client, video_mcap_bytes):
+    res = client.post(
+        "/api/analyze",
+        files={"file": ("video.mcap", io.BytesIO(video_mcap_bytes), "application/octet-stream")},
+    )
+    assert res.status_code == 200
+    video = res.json()["video"]
+    assert video is not None
+    assert video["count"] == 50
+    # 图像与遥测同 log_time 约定写入：对齐后首帧应在 t≈0
+    assert video["t"][0] == pytest.approx(0.0, abs=0.01)
+    assert video["fps"] == pytest.approx(200.0, rel=0.01)  # 5ms 周期
+
+
+def test_frame_endpoint_serves_jpeg(client, video_mcap_bytes):
+    analyze = client.post(
+        "/api/analyze",
+        files={"file": ("video.mcap", io.BytesIO(video_mcap_bytes), "application/octet-stream")},
+    )
+    run_id = analyze.json()["video"]["run_id"]
+
+    res = client.get(f"/api/frame/{run_id}/7")
+    assert res.status_code == 200
+    assert res.headers["content-type"] == "image/jpeg"
+    assert res.content.startswith(b"\xff\xd8")  # JPEG magic
+    assert "immutable" in res.headers["cache-control"]
+
+    assert client.get(f"/api/frame/{run_id}/9999").status_code == 404
+    assert client.get("/api/frame/999999/0").status_code == 404
+
+
+def test_analyze_without_image_channel_has_no_video(client, mcap_bytes):
+    res = client.post(
+        "/api/analyze",
+        files={"file": ("synth.mcap", io.BytesIO(mcap_bytes), "application/octet-stream")},
+    )
+    assert res.status_code == 200
+    assert res.json()["video"] is None

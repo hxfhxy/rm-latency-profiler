@@ -1,6 +1,7 @@
 # 大文件与产物不入库；示例刻意保留，供陌生人开箱试用
 samples/
 *.mcap
+!tests/fixtures/tiny.jpg
 !docs/example.mcap
 report/
 *.frames.csv

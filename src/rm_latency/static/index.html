@@ -37,6 +37,13 @@
          border-radius: 8px; padding: .6rem 1rem; margin: .8rem 0; font-size: .88rem; }
   .hint { color: var(--muted); font-size: .78rem; }
   h2 { font-size: .95rem; margin: 1.2rem 0 .2rem; }
+  #videoPanel { background: #fff; border: 1px solid var(--line); border-radius: 8px;
+                padding: .6rem; margin-top: .8rem; }
+  #videoHolder { background: #111; border-radius: 6px; text-align: center; min-height: 120px; }
+  #videoImg { max-width: 100%; max-height: 340px; }
+  .vctrl { display: flex; align-items: center; gap: .6rem; margin-top: .5rem; }
+  .vctrl input[type=range] { flex: 1; }
+  .vctrl button { padding: .25rem .9rem; }
 </style>
 </head>
 <body>
@@ -56,6 +63,15 @@
 <div class="runs" id="runs"></div>
 <div id="dash" style="display:none">
   <div class="cards" id="cards"></div>
+  <div id="videoPanel" style="display:none">
+    <div id="videoHolder"><img id="videoImg" alt="camera frame"></div>
+    <div class="vctrl">
+      <button id="playBtn" class="chip">▶ 播放</button>
+      <input type="range" id="frameSlider" min="0" max="0" value="0">
+      <span id="frameLabel" class="hint"></span>
+    </div>
+    <div class="hint">点击时序图任意位置，画面跳到该时刻；⚠ 录像画面即管线输入（叠加的是检测结果绘制）。</div>
+  </div>
   <h2>延迟时序 <span class="hint">框选/滚轮缩放，下方分位数跟随视野</span></h2>
 </div>
 <div id="charts">
@@ -173,11 +189,66 @@ function renderDash() {
     ["串口下行", d.serial_active ? "有写出" : "无"],
   ].map(([k, v]) => `<div class="card"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("");
 
+  initVideo();
   drawTimeline();
   drawPercentiles(null);
   drawViewTable(null);
   drawHist();
 }
+
+// ---------- 视频面板：画面与延迟时序共用同一时间轴 ----------
+let playing = false, playTimer = null, videoStrideNote = "";
+
+function initVideo() {
+  const run = runs[active], v = run.data.video;
+  const panel = document.getElementById("videoPanel");
+  playing = false; clearTimeout(playTimer);
+  document.getElementById("playBtn").textContent = "▶ 播放";
+  if (!v || !v.count) { panel.style.display = "none"; return; }
+  panel.style.display = "block";
+  videoStrideNote = v.downsampled ? `（抽稀 1/${v.stride}）` : "";
+  const slider = document.getElementById("frameSlider");
+  slider.max = v.count - 1;
+  slider.value = 0;
+  loadFrame(0);
+}
+
+function loadFrame(i) {
+  const v = runs[active].data.video;
+  document.getElementById("videoImg").src = `/api/frame/${v.run_id}/${i}`;
+  document.getElementById("frameSlider").value = i;
+  document.getElementById("frameLabel").textContent =
+    `t = ${fmt(v.t[i], 2)} s（帧 ${i + 1}/${v.count}${videoStrideNote || ""}）`;
+}
+
+function nearestFrame(tSec) {
+  const v = runs[active].data.video, t = v.t;
+  let lo = 0, hi = t.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (t[mid] < tSec) lo = mid + 1; else hi = mid;
+  }
+  if (lo > 0 && Math.abs(t[lo - 1] - tSec) < Math.abs(t[lo] - tSec)) lo -= 1;
+  return lo;
+}
+
+document.getElementById("frameSlider").oninput = (e) => loadFrame(+e.target.value);
+document.getElementById("playBtn").onclick = () => {
+  const v = runs[active].data.video;
+  playing = !playing;
+  document.getElementById("playBtn").textContent = playing ? "⏸ 暂停" : "▶ 播放";
+  clearTimeout(playTimer);
+  if (!playing) return;
+  const period = 1000 / (v.fps || 30);
+  const step = () => {
+    if (!playing) return;
+    const slider = document.getElementById("frameSlider");
+    const next = (+slider.value + 1) % v.count;
+    loadFrame(next);
+    playTimer = setTimeout(step, period);
+  };
+  step();
+};
 
 function drawTimeline() {
   const traces = [];
@@ -203,9 +274,20 @@ function drawTimeline() {
     xaxis: { title: "运行时间 (s)" }, yaxis: { title: "ms" },
     legend: { orientation: "h", y: 1.12 }, hovermode: "x unified",
   }, { displaylogo: false, responsive: true });
-  document.getElementById("timeline").on("plotly_relayout", () => {
+  const gd = document.getElementById("timeline");
+  gd.removeAllListeners("plotly_relayout");
+  gd.removeAllListeners("plotly_click");
+  gd.on("plotly_relayout", () => {
     const range = currentRange();
     drawPercentiles(range); drawViewTable(range);
+  });
+  // 点击时序图 → 画面跳到该时刻（视频与延迟数据共用同一相对秒时间轴）
+  gd.on("plotly_click", (ev) => {
+    const v = runs[active].data.video;
+    if (!v || !v.count) return;
+    const x = ev.points && ev.points.length ? ev.points[0].x : null;
+    if (x == null) return;
+    loadFrame(nearestFrame(x));
   });
 }
 

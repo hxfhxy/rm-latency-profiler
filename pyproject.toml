@@ -1,6 +1,6 @@
 [project]
 name = "rm-latency-profiler"
-version = "0.3.0"
+version = "0.4.0"
 description = "Black-box latency analysis for RoboMaster vision pipelines: MCAP telemetry analysis + video-based physical latency measurement."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,6 +12,8 @@ dependencies = [
     "numpy>=1.24",
     "pandas>=2.0",
     "plotly>=5.18",
+    "protobuf>=4.25",
+    "foxglove-schemas-protobuf>=0.4",
     "pyyaml>=6.0",
     "typer>=0.9",
     "fastapi>=0.110",
