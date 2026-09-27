@@ -1,6 +1,6 @@
 [project]
 name = "rm-latency-profiler"
-version = "0.2.0"
+version = "0.3.0"
 description = "Black-box latency analysis for RoboMaster vision pipelines: MCAP telemetry analysis + video-based physical latency measurement."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -14,10 +14,13 @@ dependencies = [
     "plotly>=5.18",
     "pyyaml>=6.0",
     "typer>=0.9",
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "ruff>=0.4"]
+dev = ["pytest>=7.0", "ruff>=0.4", "httpx>=0.27"]
 
 [project.scripts]
 rm-latency = "rm_latency.cli:app"
@@ -39,6 +42,7 @@ select = ["E", "F", "W", "I", "UP", "B"]
 [tool.ruff.lint.per-file-ignores]
 # typer/FastAPI 的参数声明 API 就是在默认值里调用，B008 属误报
 "src/rm_latency/cli.py" = ["B008"]
+"src/rm_latency/webapp.py" = ["B008"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

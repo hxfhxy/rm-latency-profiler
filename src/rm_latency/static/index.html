@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rm-latency-profiler</title>
+<script src="/static/plotly.min.js"></script>
+<style>
+  :root { --line: #e2e2e2; --muted: #777; --accent: #3459c6; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+         margin: 0; padding: 1.2rem 1.5rem 3rem; color: #222; background: #fafafa; }
+  h1 { font-size: 1.25rem; margin: 0 0 .2rem; }
+  .sub { color: var(--muted); font-size: .85rem; margin-bottom: 1rem; }
+  #drop { border: 2px dashed #bbb; border-radius: 10px; background: #fff;
+          padding: 2.2rem; text-align: center; color: var(--muted); cursor: pointer; }
+  #drop.drag { border-color: var(--accent); background: #f0f4ff; }
+  #drop b { color: var(--accent); }
+  .runs { display: flex; flex-wrap: wrap; gap: .5rem; margin: .8rem 0; }
+  .chip { border: 1px solid var(--line); background: #fff; border-radius: 999px;
+          padding: .25rem .8rem; font-size: .82rem; cursor: pointer; }
+  .chip.active { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .chip .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+               margin-right: 6px; vertical-align: 1px; }
+  .cards { display: flex; flex-wrap: wrap; gap: .6rem; margin: 1rem 0; }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 8px;
+          padding: .6rem 1rem; min-width: 130px; }
+  .card .v { font-size: 1.15rem; font-weight: 650; }
+  .card .k { font-size: .75rem; color: var(--muted); margin-top: 2px; }
+  #charts > div { background: #fff; border: 1px solid var(--line);
+                  border-radius: 8px; padding: .4rem; margin-top: .8rem; }
+  table { border-collapse: collapse; margin: .6rem 0; background: #fff; }
+  td, th { border: 1px solid var(--line); padding: .3rem .8rem; font-size: .85rem; }
+  th { color: var(--muted); font-weight: 500; text-align: left; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  #err { display: none; background: #fdecec; border: 1px solid #e8b4b4; color: #a33;
+         border-radius: 8px; padding: .6rem 1rem; margin: .8rem 0; font-size: .88rem; }
+  .hint { color: var(--muted); font-size: .78rem; }
+  h2 { font-size: .95rem; margin: 1.2rem 0 .2rem; }
+</style>
+</head>
+<body>
+<h1>rm-latency-profiler</h1>
+<div class="sub">拖入调试 MCAP → 交互分析；缩放时序图，分位数随视野实时重算；多份录像叠加对比。</div>
+
+<div id="drop">
+  拖拽 <b>.mcap</b> 到这里，或点击选择
+  <div class="hint">可选：同时拖入映射 .yaml 启用自定义遥测格式（或用文件选择器分别选）</div>
+  <input type="file" id="file" accept=".mcap" hidden>
+  <input type="file" id="mapfile" accept=".yaml,.yml,.json" hidden>
+</div>
+<div style="margin-top:.3rem"><button id="pickMap" class="chip">选择映射文件（可选）</button>
+  <span id="mapName" class="hint">未选择</span></div>
+
+<div id="err"></div>
+<div class="runs" id="runs"></div>
+<div id="dash" style="display:none">
+  <div class="cards" id="cards"></div>
+  <h2>延迟时序 <span class="hint">框选/滚轮缩放，下方分位数跟随视野</span></h2>
+</div>
+<div id="charts">
+  <div id="timeline"></div>
+  <div id="percentiles" style="display:none"></div>
+  <div id="viewTable" style="display:none"></div>
+  <div id="hist" style="display:none"></div>
+</div>
+
+<script>
+"use strict";
+const PALETTE = ["#3459c6", "#c66a34", "#2e8b57", "#8b2e7a"];
+const SEGMENTS = [
+  ["capture_to_submit_ms", "capture→submit", "#636efa"],
+  ["submit_to_finish_ms", "submit→finish", "#ef553b"],
+  ["end_to_end_ms", "端到端", "#444"],
+];
+const runs = [];
+let active = -1;
+
+const drop = document.getElementById("drop");
+const fileInput = document.getElementById("file");
+const mapInput = document.getElementById("mapfile");
+let mappingFile = null;
+
+drop.onclick = () => fileInput.click();
+document.getElementById("pickMap").onclick = (e) => { e.stopPropagation(); mapInput.click(); };
+fileInput.onchange = () => fileInput.files[0] && analyze(fileInput.files[0]);
+mapInput.onchange = () => {
+  mappingFile = mapInput.files[0] || null;
+  document.getElementById("mapName").textContent = mappingFile ? mappingFile.name : "未选择";
+};
+["dragover", "dragenter"].forEach(ev => drop.addEventListener(ev, e => {
+  e.preventDefault(); drop.classList.add("drag");
+}));
+["dragleave", "drop"].forEach(ev => drop.addEventListener(ev, e => {
+  e.preventDefault(); drop.classList.remove("drag");
+}));
+drop.addEventListener("drop", e => {
+  const files = [...e.dataTransfer.files];
+  const mcap = files.find(f => f.name.endsWith(".mcap"));
+  const map = files.find(f => /\.(ya?ml|json)$/i.test(f.name));
+  if (map) { mappingFile = map; document.getElementById("mapName").textContent = map.name; }
+  if (mcap) analyze(mcap); else showError("没有找到 .mcap 文件");
+});
+
+async function analyze(file) {
+  hideError();
+  const fd = new FormData();
+  fd.append("file", file);
+  if (mappingFile) fd.append("mapping", mappingFile);
+  const res = await fetch("/api/analyze", { method: "POST", body: fd });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail || detail; } catch (_) {}
+    showError(detail);
+    return;
+  }
+  const data = await res.json();
+  runs.push({ name: data.file, color: PALETTE[runs.length % PALETTE.length], data });
+  active = runs.length - 1;
+  renderRuns(); renderDash();
+}
+
+function renderRuns() {
+  const box = document.getElementById("runs");
+  box.innerHTML = "";
+  runs.forEach((r, i) => {
+    const chip = document.createElement("span");
+    chip.className = "chip" + (i === active ? " active" : "");
+    chip.innerHTML = `<span class="dot" style="background:${r.color}"></span>${r.name}`;
+    chip.onclick = () => { active = i; renderRuns(); renderDash(); };
+    box.appendChild(chip);
+  });
+}
+
+function quantile(values, q) {
+  const s = values.filter(v => v != null).slice().sort((a, b) => a - b);
+  if (!s.length) return null;
+  const pos = (s.length - 1) * q, base = Math.floor(pos), rest = pos - base;
+  return rest ? s[base] + (s[base + 1] - s[base]) * rest : s[base];
+}
+
+function fmt(v, digits = 1) { return v == null ? "—" : v.toFixed(digits); }
+
+function currentRange() {
+  const gd = document.getElementById("timeline");
+  const r = gd._fullLayout && gd._fullLayout.xaxis
+    && gd._fullLayout.xaxis.range ? gd._fullLayout.xaxis.range : null;
+  if (!r) return null;
+  return [r[0], r[1]];
+}
+
+function valuesInRange(run, key, range) {
+  const { t } = run.data.timeline;
+  const ys = run.data.timeline[key];
+  if (!range) return ys;
+  return ys.filter((_, i) => t[i] >= range[0] && t[i] <= range[1]);
+}
+
+function renderDash() {
+  const run = runs[active], d = run.data;
+  document.getElementById("dash").style.display = "block";
+  ["percentiles", "viewTable", "hist"].forEach(id =>
+    document.getElementById(id).style.display = "block");
+
+  const seg = d.segments;
+  document.getElementById("cards").innerHTML = [
+    ["帧数", d.frames + (d.downsampled ? "（图表抽稀）" : "")],
+    ["帧率", fmt(d.fps) + " fps"],
+    ["抖动", "±" + fmt(d.jitter_ms, 2) + " ms"],
+    ["疑似掉帧", d.gaps + " 次"],
+    ["端到端 p50", fmt(seg.end_to_end.p50) + " ms"],
+    ["端到端 p99", fmt(seg.end_to_end.p99) + " ms"],
+    ["串口下行", d.serial_active ? "有写出" : "无"],
+  ].map(([k, v]) => `<div class="card"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("");
+
+  drawTimeline();
+  drawPercentiles(null);
+  drawViewTable(null);
+  drawHist();
+}
+
+function drawTimeline() {
+  const traces = [];
+  runs.forEach((r, i) => {
+    const tl = r.data.timeline;
+    if (i === active) {
+      SEGMENTS.forEach(([key, label, color]) => traces.push({
+        x: tl.t, y: tl[key], name: label, mode: "lines",
+        line: { color, width: 1 }, hovertemplate: "%{y:.2f} ms @ %{x:.2f}s<extra>" + label + "</extra>",
+      }));
+      const gi = tl.gap_indices || [];
+      if (gi.length) traces.push({
+        x: gi.map(k => tl.t[k]), y: gi.map(k => tl.end_to_end_ms[k]),
+        name: "疑似掉帧", mode: "markers", marker: { color: "#d62728", size: 5, symbol: "x" },
+      });
+    } else {
+      traces.push({ x: tl.t, y: tl.end_to_end_ms, name: r.name + "（端到端）",
+        mode: "lines", line: { color: r.color, width: 1, dash: "dot" } });
+    }
+  });
+  Plotly.react("timeline", traces, {
+    margin: { l: 60, r: 20, t: 10, b: 40 }, height: 340, template: "plotly_white",
+    xaxis: { title: "运行时间 (s)" }, yaxis: { title: "ms" },
+    legend: { orientation: "h", y: 1.12 }, hovermode: "x unified",
+  }, { displaylogo: false, responsive: true });
+  document.getElementById("timeline").on("plotly_relayout", () => {
+    const range = currentRange();
+    drawPercentiles(range); drawViewTable(range);
+  });
+}
+
+function drawPercentiles(range) {
+  const run = runs[active];
+  const traces = ["p50", "p95", "p99"].map(q => ({
+    name: q,
+    x: SEGMENTS.map(([, label]) => label),
+    y: SEGMENTS.map(([key]) => {
+      const v = valuesInRange(run, key, range);
+      return quantile(v, parseInt(q.slice(1)) / 100);
+    }),
+    type: "bar",
+    marker: { color: { p50: "#9ecae9", p95: "#6baed6", p99: "#3459c6" }[q] },
+  }));
+  Plotly.react("percentiles", traces, {
+    title: { text: "分位数（" + (range ? "当前视野" : "全程") + "）", font: { size: 13 } },
+    margin: { l: 60, r: 20, t: 40, b: 40 }, height: 300, template: "plotly_white",
+    barmode: "group", yaxis: { title: "ms" }, legend: { orientation: "h", y: 1.18 },
+  }, { displaylogo: false, responsive: true });
+}
+
+function drawViewTable(range) {
+  const run = runs[active], seg = run.data.segments;
+  const rows = SEGMENTS.map(([key, label]) => {
+    const v = valuesInRange(run, key, range);
+    const live = {
+      p50: quantile(v, .5), p95: quantile(v, .95), p99: quantile(v, .99),
+      max: Math.max(...v.filter(x => x != null), -Infinity),
+    };
+    const all = seg[key];
+    const cell = (a, b) => `<td class="num">${fmt(all[a])} → <b>${fmt(live[a])}</b></td>`;
+    return `<tr><th>${label}</th>${cell("p50")}${cell("p95")}${cell("p99")}${cell("max")}</tr>`;
+  }).join("");
+  const scope = range ? `视野 ${range[0].toFixed(1)}–${range[1].toFixed(1)} s` : "全程";
+  document.getElementById("viewTable").innerHTML =
+    `<h2>视野重算 <span class="hint">${scope}；格式：全程 → 当前视野</span></h2>
+     <table><tr><th>分段</th><th>p50 ms</th><th>p95 ms</th><th>p99 ms</th><th>max ms</th></tr>${rows}</table>`;
+}
+
+function drawHist() {
+  const run = runs[active], tl = run.data.timeline;
+  const traces = SEGMENTS.map(([key, label]) => ({
+    x: tl[key].filter(v => v != null), name: label, type: "histogram", opacity: .6,
+    nbinsx: 80,
+  }));
+  Plotly.react("hist", traces, {
+    title: { text: run.name + " · 延迟分布", font: { size: 13 } },
+    margin: { l: 60, r: 20, t: 40, b: 40 }, height: 300, template: "plotly_white",
+    barmode: "overlay", xaxis: { title: "ms" }, yaxis: { title: "帧数" },
+  }, { displaylogo: false, responsive: true });
+}
+
+function showError(msg) {
+  const el = document.getElementById("err");
+  el.style.display = "block";
+  el.textContent = "分析失败：" + msg;
+}
+function hideError() { document.getElementById("err").style.display = "none"; }
+</script>
+</body>
+</html>

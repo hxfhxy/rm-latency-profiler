@@ -34,7 +34,10 @@ def find_telemetry_channel(
     """
     mapping = mapping or DEFAULT_MAPPING
     with open(path, "rb") as f:
-        summary = make_reader(f).get_summary()
+        try:
+            summary = make_reader(f).get_summary()
+        except Exception as exc:  # mcap 库对损坏/非 MCAP 输入抛多种异常，统一转译
+            raise TelemetryNotFoundError(f"不是有效的 MCAP 文件或已损坏：{path}（{exc}）") from exc
         if summary is None:
             raise TelemetryNotFoundError(f"录像没有 summary（写入中断或非 MCAP）：{path}")
         for channel in summary.channels.values():
@@ -62,7 +65,13 @@ def load_frames(path: str | Path, mapping: TelemetryMapping | None = None) -> pd
 
     with open(path, "rb") as f:
         reader = make_reader(f)
-        for _schema, _channel, message in reader.iter_messages(topics=[topic]):
+        try:
+            messages = list(reader.iter_messages(topics=[topic]))
+        except Exception as exc:
+            raise TelemetryNotFoundError(
+                f"消息流读取失败（文件可能截断）：{path}（{exc}）"
+            ) from exc
+        for _schema, _channel, message in messages:
             try:
                 data = json.loads(message.data)
             except json.JSONDecodeError:
