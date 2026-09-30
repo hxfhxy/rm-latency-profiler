@@ -329,10 +329,15 @@ function drawTimeline() {
       }));
       const gi = tl.gap_indices || [];
       const gc = tl.gap_causes || [];
+      const gs = tl.gap_skips || [];
+      let marks = gi.map((rowIdx, k) => ({ rowIdx, cause: gc[k] || "unknown", skip: gs[k] || 1 }));
+      // 密度治理：标记是事件，不是纹理。超过 300 个时只画疑似停顿（skip≥3），
+      // 稳态节流的跳 1 帧占多数时全画 = 一坨噪声（D13）；统计留给摘要卡片。
+      if (marks.length > 300) marks = marks.filter(m => m.skip >= 3);
+      if (marks.length > 300) marks = marks.slice(0, 300);
       const byCause = {};
-      gi.forEach((rowIdx, k) => {
-        const cause = gc[k] || "unknown";
-        (byCause[cause] = byCause[cause] || []).push(rowIdx);
+      marks.forEach(m => {
+        (byCause[m.cause] = byCause[m.cause] || []).push(m.rowIdx);
       });
       Object.entries(byCause).forEach(([cause, rows]) => {
         const style = GAP_STYLE[cause] || GAP_STYLE.unknown;

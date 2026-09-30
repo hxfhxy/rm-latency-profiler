@@ -68,7 +68,9 @@ def create_app(example_path: Path | None = None) -> FastAPI:
 
     @app.get("/")
     def index() -> FileResponse:
-        return FileResponse(_STATIC_DIR / "index.html")
+        # no-cache：工具升级后用户刷新页面必须拿到新前端，不许吃旧缓存
+        return FileResponse(_STATIC_DIR / "index.html",
+                            headers={"Cache-Control": "no-cache"})
 
     @app.api_route("/example.mcap", methods=["GET", "HEAD"])
     def example() -> FileResponse:
@@ -126,6 +128,8 @@ def create_app(example_path: Path | None = None) -> FastAPI:
         stats = analysis.frame_interval_stats(df)
         percentiles = analysis.percentile_table(df)
 
+        marks = _gap_marks(df)
+
         return JSONResponse(
             {
                 "file": file.filename,
@@ -140,8 +144,9 @@ def create_app(example_path: Path | None = None) -> FastAPI:
                     for name, row in percentiles.iterrows()
                 },
                 "timeline": _timeline_payload(df),
-                "gap_indices": [i for i, _ in _gap_marks(df)],
-                "gap_causes": [c for _, c in _gap_marks(df)],
+                "gap_indices": [i for i, _, _ in marks],
+                "gap_causes": [c for _, c, _ in marks],
+                "gap_skips": [s for _, _, s in marks],
                 "gap_attribution": analysis.gap_attribution(df),
                 "gap_breakdown": analysis.gap_breakdown(df),
                 "video": video,
@@ -252,8 +257,8 @@ def _stride(n: int) -> int:
     return max(1, math.ceil(n / _MAX_POINTS))
 
 
-def _gap_marks(df) -> list[tuple[int, str]]:
-    """疑似掉帧行号 + 归因（compute_overload / capture_side / unknown）。"""
+def _gap_marks(df) -> list[tuple[int, str, int]]:
+    """疑似掉帧行号 + 归因 + 跳帧数（skip = round(间隔/中位数) − 1）。"""
     intervals = df["interval_ms"]
     median = float(intervals.median()) if len(intervals) else 0.0
     if median <= 0:
@@ -261,12 +266,13 @@ def _gap_marks(df) -> list[tuple[int, str]]:
     compute = df["submit_to_finish_ms"]
     marks = []
     for i in np.flatnonzero((intervals > max(analysis.GAP_FACTOR * median, 1.0)).to_numpy()):
+        skip = max(1, round(float(intervals.iloc[i]) / median) - 1)
         if i == 0 or pd.isna(compute.iloc[i - 1]):
-            marks.append((int(i), "unknown"))
+            marks.append((int(i), "unknown", int(skip)))
         elif float(compute.iloc[i - 1]) > median:
-            marks.append((int(i), "compute_overload"))
+            marks.append((int(i), "compute_overload", int(skip)))
         else:
-            marks.append((int(i), "capture_side"))
+            marks.append((int(i), "capture_side", int(skip)))
     return marks
 
 
@@ -274,11 +280,12 @@ def _timeline_payload(df) -> dict:
     stride = _stride(len(df))
     view = df.iloc[::stride]
     t = (view["stamp_ns"].to_numpy() - df["stamp_ns"].iloc[0]) / 1e9
-    marks = _gap_marks(df)
+    marks = [(i // stride, c, s) for i, c, s in _gap_marks(df)]
     payload = {
         "t": [round(float(v), 4) for v in t],
-        "gap_indices": [i // stride for i, _ in marks],
-        "gap_causes": [c for _, c in marks],
+        "gap_indices": [i for i, _, _ in marks],
+        "gap_causes": [c for _, c, _ in marks],
+        "gap_skips": [s for _, _, s in marks],
     }
     for col in ("capture_to_submit_ms", "submit_to_finish_ms", "end_to_end_ms"):
         payload[col] = [_finite_or_none(v, ndigits=4) for v in view[col]]
