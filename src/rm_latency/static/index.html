@@ -53,7 +53,7 @@
 </style>
 </head>
 <body>
-<h1>rm-latency-profiler</h1>
+<h1>rm-latency-profiler <span id="verBadge" class="hint" style="font-weight:400"></span></h1>
 <div class="sub">拖入调试 MCAP → 交互分析；缩放时序图，分位数随视野实时重算；多份录像叠加对比。</div>
 
 <div id="drop">
@@ -125,6 +125,10 @@ mapInput.onchange = () => {
 // 服务端带 --example 时显示一键演示入口
 fetch("/example.mcap", { method: "HEAD" }).then(res => {
   if (res.ok) document.getElementById("loadDemo").style.display = "";
+}).catch(() => {});
+// 版本徽标：页面新旧一眼可判
+fetch("/api/version").then(r => r.json()).then(v => {
+  document.getElementById("verBadge").textContent = "v" + v.version;
 }).catch(() => {});
 document.getElementById("loadDemo").onclick = async () => {
   hideError();

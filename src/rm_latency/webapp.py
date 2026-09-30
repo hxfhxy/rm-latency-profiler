@@ -72,6 +72,13 @@ def create_app(example_path: Path | None = None) -> FastAPI:
         return FileResponse(_STATIC_DIR / "index.html",
                             headers={"Cache-Control": "no-cache"})
 
+    @app.get("/api/version")
+    def version() -> dict:
+        # 页面角落显示版本号：让"这个页面是不是新版"永远可判（D14 的教训）
+        from . import __version__
+
+        return {"version": __version__}
+
     @app.api_route("/example.mcap", methods=["GET", "HEAD"])
     def example() -> FileResponse:
         # 演示/面试场景一键加载示例数据；未提供 --example 时前端不显示入口。

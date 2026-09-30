@@ -29,6 +29,14 @@ def test_index_served(client):
     assert res.status_code == 200
     assert "rm-latency-profiler" in res.text
     assert "plotly.min.js" in res.text
+    # 升级防坑：页面不许吃浏览器缓存
+    assert res.headers["cache-control"] == "no-cache"
+
+
+def test_version_endpoint(client):
+    res = client.get("/api/version")
+    assert res.status_code == 200
+    assert res.json()["version"].count(".") == 2  # 语义化版本号
 
 
 def test_plotly_js_served_offline(client):

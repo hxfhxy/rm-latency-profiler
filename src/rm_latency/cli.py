@@ -126,6 +126,7 @@ def serve(
 ):
     """启动本地 Web 界面（交互式探索，比静态报告多视野缩放与多录像对比）。"""
     import threading
+    import time
     import webbrowser
 
     import uvicorn
@@ -135,7 +136,22 @@ def serve(
     url = f"http://{host}:{port}"
     typer.echo(f"Web 界面：{url}（Ctrl+C 退出）")
     if not no_browser:
-        threading.Timer(1.0, webbrowser.open, args=(url,)).start()
+        # 等端口真正可连再弹浏览器：绑定失败（端口被旧进程占用）时
+        # 不能把用户带去一个残留的旧服务——那正是"界面一直没更新"的来源
+        def _open_when_ready():
+            import urllib.request
+
+            for _ in range(50):
+                try:
+                    urllib.request.urlopen(url, timeout=0.2)
+                    webbrowser.open(url)
+                    return
+                except OSError:
+                    time.sleep(0.1)
+            typer.secho(f"服务未能启动：{url} 无法连接（端口被占用？）",
+                        fg=typer.colors.RED, err=True)
+
+        threading.Thread(target=_open_when_ready, daemon=True).start()
     uvicorn.run(create_app(example), host=host, port=port, log_level="warning")
 
 
