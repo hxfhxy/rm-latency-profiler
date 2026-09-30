@@ -37,8 +37,14 @@
          border-radius: 8px; padding: .6rem 1rem; margin: .8rem 0; font-size: .88rem; }
   .hint { color: var(--muted); font-size: .78rem; }
   h2 { font-size: .95rem; margin: 1.2rem 0 .2rem; }
+  #drop.busy { border-color: var(--accent); background: #f0f4ff; cursor: wait; }
   #videoPanel { background: #fff; border: 1px solid var(--line); border-radius: 8px;
                 padding: .6rem; margin-top: .8rem; }
+  #loading { display: flex; align-items: center; justify-content: center; gap: .6rem; }
+  .spinner { width: 20px; height: 20px; border: 3px solid #ccd6f5; border-top-color: var(--accent);
+             border-radius: 50%; animation: spin .8s linear infinite; flex: none; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #loadText { color: var(--accent); font-size: .9rem; }
   #videoHolder { background: #111; border-radius: 6px; text-align: center; min-height: 120px; }
   #videoImg { max-width: 100%; max-height: 340px; }
   .vctrl { display: flex; align-items: center; gap: .6rem; margin-top: .5rem; }
@@ -51,8 +57,13 @@
 <div class="sub">拖入调试 MCAP → 交互分析；缩放时序图，分位数随视野实时重算；多份录像叠加对比。</div>
 
 <div id="drop">
-  拖拽 <b>.mcap</b> 到这里，或点击选择
-  <div class="hint">可选：同时拖入映射 .yaml 启用自定义遥测格式（或用文件选择器分别选）</div>
+  <div id="dropHint">
+    拖拽 <b>.mcap</b> 到这里，或点击选择
+    <div class="hint">可选：同时拖入映射 .yaml 启用自定义遥测格式（或用文件选择器分别选）</div>
+  </div>
+  <div id="loading" style="display:none">
+    <span class="spinner"></span><span id="loadText">正在分析…</span>
+  </div>
   <input type="file" id="file" accept=".mcap" hidden>
   <input type="file" id="mapfile" accept=".yaml,.yml,.json" hidden>
 </div>
@@ -134,22 +145,46 @@ drop.addEventListener("drop", e => {
   if (mcap) analyze(mcap); else showError("没有找到 .mcap 文件");
 });
 
+let busy = false;
+
 async function analyze(file) {
+  if (busy) return;  // 分析进行中忽略新提交，防重复
+  busy = true;
   hideError();
-  const fd = new FormData();
-  fd.append("file", file);
-  if (mappingFile) fd.append("mapping", mappingFile);
-  const res = await fetch("/api/analyze", { method: "POST", body: fd });
-  if (!res.ok) {
-    let detail = res.statusText;
-    try { detail = (await res.json()).detail || detail; } catch (_) {}
-    showError(detail);
-    return;
+  drop.classList.add("busy");
+  document.getElementById("dropHint").style.display = "none";
+  document.getElementById("loading").style.display = "flex";
+  const t0 = Date.now();
+  const timer = setInterval(() => {
+    document.getElementById("loadText").textContent =
+      `正在分析 ${file.name}… 已用 ${Math.round((Date.now() - t0) / 1000)} s` +
+      "（大文件需要几十秒，取决于录像大小）";
+  }, 300);
+
+  try {
+    const fd = new FormData();
+    fd.append("file", file);
+    if (mappingFile) fd.append("mapping", mappingFile);
+    const res = await fetch("/api/analyze", { method: "POST", body: fd });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try { detail = (await res.json()).detail || detail; } catch (_) {}
+      showError(detail);
+      return;
+    }
+    const data = await res.json();
+    runs.push({ name: data.file, color: PALETTE[runs.length % PALETTE.length], data });
+    active = runs.length - 1;
+    renderRuns(); renderDash();
+  } catch (e) {
+    showError("请求失败：" + e.message);
+  } finally {
+    clearInterval(timer);
+    busy = false;
+    drop.classList.remove("busy");
+    document.getElementById("loading").style.display = "none";
+    document.getElementById("dropHint").style.display = "";
   }
-  const data = await res.json();
-  runs.push({ name: data.file, color: PALETTE[runs.length % PALETTE.length], data });
-  active = runs.length - 1;
-  renderRuns(); renderDash();
 }
 
 function renderRuns() {
