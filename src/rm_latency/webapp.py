@@ -164,14 +164,16 @@ def _extract_video(path: Path, df) -> dict | None:
 
     超过帧数上限时按等步长抽稀覆盖**全时段**（复盘时间轴必须完整，
     精度损失换完整性），而不是从头截断——截断会让时间轴尾部点不出画面。
+    总帧数直接读 MCAP summary 的通道统计，省一遍全文件扫描。
 
     时间对齐：图像消息的 log_time 是墙钟域，遥测 stamp_ns 是运行时单调域。
     两个域的偏移取遥测消息的 median(log_time - stamp)（同一时刻记录，偏移近似恒定），
     图像帧时间 = img_log_time - offset，再换算到与时间轴一致的相对秒。
     """
-    topic = _find_image_topic(path)
-    if topic is None:
+    info = _find_image_info(path)
+    if info is None:
         return None
+    topic, total = info
 
     try:
         offsets = (df["log_time_ns"] - df["stamp_ns"]).dropna()
@@ -182,11 +184,10 @@ def _extract_video(path: Path, df) -> dict | None:
     from foxglove_schemas_protobuf.CompressedImage_pb2 import CompressedImage
     from mcap.reader import make_reader
 
-    # 第一遍只数帧定步长（不解码 protobuf）；第二遍按步长取帧
-    total = 0
-    with open(path, "rb") as f:
-        for _ in make_reader(f).iter_messages(topics=[topic]):
-            total += 1
+    if total is None:
+        # 极少数录像没有 summary 统计：退回全文件数一遍
+        with open(path, "rb") as f:
+            total = sum(1 for _ in make_reader(f).iter_messages(topics=[topic]))
     if total == 0:
         return None
     stride = max(1, -(-total // _MAX_VIDEO_FRAMES))  # ceil 除法
@@ -222,7 +223,11 @@ def _extract_video(path: Path, df) -> dict | None:
     }
 
 
-def _find_image_topic(path: Path) -> str | None:
+def _find_image_info(path: Path) -> tuple[str, int | None] | None:
+    """从 summary 找图像通道，返回 (topic, 消息总数)；无图像通道返回 None。
+
+    消息总数来自 summary 的通道统计——避免为定抽稀步长再扫一遍全文件。
+    """
     from mcap.reader import make_reader
 
     with open(path, "rb") as f:
@@ -231,8 +236,12 @@ def _find_image_topic(path: Path) -> str | None:
             return None
         for channel in summary.channels.values():
             schema = summary.schemas.get(channel.schema_id)
-            if schema is not None and schema.name == _IMAGE_SCHEMA:
-                return channel.topic
+            if schema is None or schema.name != _IMAGE_SCHEMA:
+                continue
+            count = None
+            if summary.statistics is not None:
+                count = summary.statistics.channel_message_counts.get(channel.id)
+            return channel.topic, count
     return None
 
 

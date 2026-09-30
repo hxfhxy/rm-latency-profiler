@@ -34,11 +34,14 @@ def write_synthetic(
     compute_ms: float = 10.0,
     serial_written: bool = False,
     images: bool = False,
+    jitter_ms: float = 0.0,
 ) -> None:
     """生成 n 帧已知延迟的合成遥测录像。
 
     第 i 帧的 capture_ns = i * period * 1e6（单调域），
     三段延迟 = 常数 + 每 25 帧一个 3 倍毛刺，用于验证分位数与掉帧检测。
+    jitter_ms > 0 时叠加确定性三角抖动（幅值 ±jitter，模拟真实调度噪声），
+    供噪声带统计测试使用——常数分布的 MAD=0，会把噪声带塌缩成 0。
     images=True 时附带同帧率的 foxglove.CompressedImage 通道（墙钟域 log_time），
     用于视频回放功能的测试。
     """
@@ -64,8 +67,13 @@ def write_synthetic(
         wall_base = 1_700_000_000_000_000_000
         for i in range(n_frames):
             capture = int(i * period_ms * 1e6)
+            # 确定性抖动：-1..1 的三角波，不引入随机性以保持测试可复现
+            wobble = (abs((i * 7) % 14 - 7) / 7.0 - 0.5) * 2.0  # -1..1
+            compute_jitter = jitter_ms * wobble
             transport = transport_ms * (3 if i % 25 == 0 else 1)
-            compute = compute_ms * (3 if i % 25 == 0 else 1)
+            compute = compute_ms * (3 if i % 25 == 0 else 1) + compute_jitter
+            if compute < 0.05:
+                compute = 0.05
             submit = capture + int(transport * 1e6)
             finish = submit + int(compute * 1e6)
             if serial_written:

@@ -11,7 +11,7 @@ from pathlib import Path
 import pandas as pd
 import plotly.graph_objects as go
 
-from .analysis import duration_s, frame_interval_stats, percentile_table
+from .analysis import duration_s, frame_interval_stats, median_noise_ms, percentile_table
 
 # 时序叠加抽稀阈值，与单报告一致
 _MAX_POINTS = 5000
@@ -31,7 +31,7 @@ def build_compare(df_before: pd.DataFrame, df_after: pd.DataFrame,
     pct_after = percentile_table(df_after)
     stats_before = frame_interval_stats(df_before)
     stats_after = frame_interval_stats(df_after)
-    deltas = _delta_rows(pct_before, pct_after)
+    deltas = _delta_rows(df_before, df_after, pct_before, pct_after)
 
     summary = [
         ("对比对象", f"{before_path.name} → {after_path.name}"),
@@ -54,11 +54,17 @@ def build_compare(df_before: pd.DataFrame, df_after: pd.DataFrame,
         body=body,
         note="对比成立前提：两次录像输入相同（如 replay 同一段视频），除被测改动外配置一致。"
              "delta = after − before；延迟指标越低越好，绿色为改善、红色为恶化。"
-             "掉帧归因为启发式判据（D11），不是证明。",
+             "p50 行给出 95% 噪声带（两场各自中位数标准误的合成）：delta 落在带内标记"
+             "「噪声内」——那是测量抖动，不是改动效果。p95/p99/max 为尾统计量，"
+             "不做此检验。掉帧归因为启发式判据（D11），不是证明。",
     )
 
 
-def _delta_rows(pct_before: pd.DataFrame, pct_after: pd.DataFrame) -> list[dict]:
+def _delta_rows(df_before: pd.DataFrame, df_after: pd.DataFrame,
+                pct_before: pd.DataFrame, pct_after: pd.DataFrame) -> list[dict]:
+    """逐段逐分位的 delta；p50 行附统计噪声检验，尾分位不做检验（None）。"""
+    noise_before = {seg: median_noise_ms(df_before[f"{seg}_ms"]) for seg, _ in _SEGMENTS}
+    noise_after = {seg: median_noise_ms(df_after[f"{seg}_ms"]) for seg, _ in _SEGMENTS}
     rows = []
     for seg_key, seg_label in _SEGMENTS:
         for stat in _DELTA_STATS:
@@ -66,9 +72,17 @@ def _delta_rows(pct_before: pd.DataFrame, pct_after: pd.DataFrame) -> list[dict]
             after = float(pct_after.loc[seg_key, stat])
             delta = after - before
             pct = (delta / before * 100) if before > 0 else float("nan")
+            noise = None
+            within = None
+            if stat == "p50":
+                nb, na = noise_before[seg_key], noise_after[seg_key]
+                if nb == nb and na == na:  # 非 NaN
+                    noise = (nb * nb + na * na) ** 0.5
+                    within = abs(delta) < noise
             rows.append({
                 "segment": seg_key, "segment_label": seg_label, "stat": stat,
                 "before": before, "after": after, "delta": delta, "pct": pct,
+                "noise": noise, "within_noise": within,
             })
     return rows
 
@@ -76,8 +90,15 @@ def _delta_rows(pct_before: pd.DataFrame, pct_after: pd.DataFrame) -> list[dict]
 def _conclusion(deltas: list[dict]) -> str:
     e2e = {r["stat"]: r for r in deltas if r["segment"] == "end_to_end"}
     p50, p99 = e2e["p50"], e2e["p99"]
-    fmt = lambda r: f"{r['delta']:+.1f} ms ({r['pct']:+.0f}%)"  # noqa: E731
-    return f"端到端 p50 {fmt(p50)}，p99 {fmt(p99)}"
+
+    def fmt(r: dict) -> str:
+        text = f"{r['delta']:+.1f} ms ({r['pct']:+.0f}%)"
+        if r["within_noise"]:
+            text += "，噪声内"
+        return text
+
+    verdict = "，端到端变化在统计噪声范围内，不构成结论" if p50["within_noise"] else ""
+    return f"端到端 p50 {fmt(p50)}，p99 {fmt(p99)}{verdict}"
 
 
 def _delta_table_html(deltas: list[dict]) -> str:
@@ -87,15 +108,22 @@ def _delta_table_html(deltas: list[dict]) -> str:
             change = '<span class="muted">—</span>'
         else:
             cls = "good" if r["delta"] < 0 else ("bad" if r["delta"] > 0 else "")
+            mark = ' <span class="muted">噪声内</span>' if r["within_noise"] else ""
             change = (f'<span class="{cls}">{r["after"]:.1f} ms'
-                      f'（{r["pct"]:+.0f}%）</span>')
+                      f'（{r["pct"]:+.0f}%）</span>{mark}')
+        if r["noise"] is None:
+            noise_cell = '<span class="muted">未检验</span>'
+        else:
+            noise_cell = f'±{r["noise"]:.2f}'
         rows.append(
             f"<tr><th>{r['segment_label']}</th><td>{r['stat']}</td>"
-            f'<td class="num">{r["before"]:.1f}</td>{change}</tr>'
+            f'<td class="num">{r["before"]:.1f}</td>{change}'
+            f"<td>{noise_cell}</td></tr>"
         )
     return (
         "<h2>Delta 表（before → after）</h2>"
-        '<table><tr><th>分段</th><th>分位</th><th>before ms</th><th>after</th></tr>'
+        '<table><tr><th>分段</th><th>分位</th><th>before ms</th><th>after</th>'
+        "<th>p50 噪声带</th></tr>"
         + "".join(rows) + "</table>"
     )
 

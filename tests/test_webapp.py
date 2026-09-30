@@ -143,3 +143,19 @@ def test_analyze_without_image_channel_has_no_video(client, mcap_bytes):
     )
     assert res.status_code == 200
     assert res.json()["video"] is None
+
+
+def test_video_downsample_covers_full_duration(client, tmp_path):
+    """帧数超上限：等步长抽稀必须覆盖完整时间轴（D10：不许截断尾部）。"""
+    path = tmp_path / "many.mcap"
+    write_synthetic(path, n_frames=5000, images=True)  # 5ms 周期 = 25s
+    res = client.post(
+        "/api/analyze",
+        files={"file": ("many.mcap", io.BytesIO(path.read_bytes()), "application/octet-stream")},
+    )
+    assert res.status_code == 200
+    video = res.json()["video"]
+    assert video["downsampled"] is True
+    assert video["stride"] == 3  # ceil(5000/2400)
+    assert video["count"] == (5000 + 2) // 3
+    assert video["t"][-1] == pytest.approx(24.995, abs=0.1)  # 尾部仍在

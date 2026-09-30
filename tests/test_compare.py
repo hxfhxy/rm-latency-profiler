@@ -28,9 +28,9 @@ def pair(tmp_path_factory) -> tuple[Path, Path]:
 def test_delta_rows_direction_and_value(pair):
     df_b = analysis.with_segments(ingest.load_frames(pair[0]))
     df_a = analysis.with_segments(ingest.load_frames(pair[1]))
-    deltas = compare_mod._delta_rows(
-        analysis.percentile_table(df_b), analysis.percentile_table(df_a)
-    )
+    deltas = compare_mod._delta_rows(df_b, df_a,
+                                     analysis.percentile_table(df_b),
+                                     analysis.percentile_table(df_a))
     compute_p50 = next(r for r in deltas
                        if r["segment"] == "submit_to_finish" and r["stat"] == "p50")
     assert compute_p50["before"] == pytest.approx(10.0, abs=0.01)
@@ -62,3 +62,43 @@ def test_cli_compare(tmp_path, pair):
     assert out_file.exists()
     text = out_file.read_text(encoding="utf-8")
     assert "端到端 p50" in text
+
+
+# ---------- 噪声基线（D12） ----------
+
+def test_noise_flags_identical_runs_as_inconclusive(tmp_path):
+    """同配置带抖动的两场：delta≈0 必落在噪声带内，结论必须拒绝下结论。"""
+    paths = []
+    for name in ("run1.mcap", "run2.mcap"):
+        path = tmp_path / name
+        write_synthetic(path, n_frames=400, compute_ms=10.0, jitter_ms=1.0)
+        paths.append(path)
+    df1 = analysis.with_segments(ingest.load_frames(paths[0]))
+    df2 = analysis.with_segments(ingest.load_frames(paths[1]))
+    deltas = compare_mod._delta_rows(df1, df2,
+                                     analysis.percentile_table(df1),
+                                     analysis.percentile_table(df2))
+    e2e_p50 = next(r for r in deltas
+                   if r["segment"] == "end_to_end" and r["stat"] == "p50")
+    assert e2e_p50["within_noise"] is True
+    assert e2e_p50["noise"] > 0
+
+    html = compare_mod.build_compare(df1, df2, paths[0], paths[1])
+    assert "不构成结论" in html
+    assert "噪声内" in html
+
+
+def test_noise_does_not_mask_real_change(pair):
+    """10→7ms 的真实差异（30%）必须逃出噪声带，不许误标。"""
+    df_b = analysis.with_segments(ingest.load_frames(pair[0]))
+    df_a = analysis.with_segments(ingest.load_frames(pair[1]))
+    deltas = compare_mod._delta_rows(df_b, df_a,
+                                     analysis.percentile_table(df_b),
+                                     analysis.percentile_table(df_a))
+    compute_p50 = next(r for r in deltas
+                       if r["segment"] == "submit_to_finish" and r["stat"] == "p50")
+    assert compute_p50["within_noise"] is False
+    # 尾分位未做检验，明确为 None 而不是误标
+    compute_p99 = next(r for r in deltas
+                       if r["segment"] == "submit_to_finish" and r["stat"] == "p99")
+    assert compute_p99["within_noise"] is None

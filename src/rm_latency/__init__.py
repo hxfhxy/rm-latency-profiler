@@ -1,3 +1,3 @@
 """rm-latency-profiler：RM 视觉链路延迟黑盒分析工具。"""
 
-__version__ = "0.5.1"
+__version__ = "0.6.0"

@@ -11,7 +11,8 @@ RoboMaster 视觉链路**黑盒延迟分析工具**：不吃队内代码一行�
   **掉帧归因**：计算过载 vs 采集侧断流）、串口下行增量时间线，汇总为
   单文件 HTML 报告（离线可打开）。
 - **A/B 对比报告**：`compare` 命令对两份录像出 delta 表（改善绿/恶化红）
-  与对齐叠加曲线，优化改动一键验收。
+  与对齐叠加曲线，优化改动一键验收；**p50 带统计噪声检验**——delta 落在
+  95% 噪声带内会被明确标记"噪声内，不构成结论"，防止把抖动当成成果。
 - **交互式 Web 界面**：`rm-latency serve` 拖入录像即分析——缩放时序图，
   分位数随视野实时重算；多份录像叠加对比（优化前后的 A/B 验收）；
   **画面回放与延迟时序共用同一时间轴**，点哪里看哪里，延迟尖峰瞬间的
@@ -88,11 +89,13 @@ rm-latency report run.mcap -m my-team.yaml
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-pytest          # 全部基于合成录像，不需要真实数据
+pytest          # 单元与契约测试，全部基于合成录像
 ruff check .
+
+# 前端 e2e 冒烟（可选）：pip install -e ".[e2e]" && playwright install chromium
 ```
 
-CI 在 push/PR 时跑 ruff + pytest（Python 3.10 / 3.12 矩阵）。
+CI 在 push/PR 时跑 ruff + pytest（Python 3.10/3.12 矩阵，含浏览器 e2e 冒烟）。
 
 ## Roadmap
 

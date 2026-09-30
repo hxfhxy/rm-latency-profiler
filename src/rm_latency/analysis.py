@@ -68,6 +68,21 @@ def frame_interval_stats(df: pd.DataFrame) -> dict:
     }
 
 
+def median_noise_ms(series: pd.Series) -> float:
+    """样本中位数的 95% 噪声带宽（±ms）：2 × 1.2533 × robust σ / √n。
+
+    1.2533 是正态假设下中位数标准误对 σ/√n 的修正系数；robust σ = 1.4826 × MAD。
+    用途：compare 报告判断 delta 是否落在统计噪声内（D12）。
+    样本 < 30 时不可信，返回 NaN。
+    """
+    s = pd.Series(series).dropna()
+    n = len(s)
+    if n < 30:
+        return float("nan")
+    sigma = 1.4826 * float((s - s.median()).abs().median())
+    return 2 * 1.2533 * sigma / (n ** 0.5)
+
+
 def gap_attribution(df: pd.DataFrame) -> dict:
     """把疑似掉帧归因到最可能的原因（启发式，诚实标注为归因而非证明）。
 
