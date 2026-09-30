@@ -27,12 +27,29 @@ RoboMaster 视觉链路**黑盒延迟分析工具**：不吃队内代码一行�
 
 ## 快速开始
 
-```bash
-pip install -e .
+**直接安装（推荐）**——pipx / uv 会自动建隔离环境并把命令放进 PATH，不涉及虚拟环境操作：
 
+```bash
+pipx install git+https://github.com/hxfhxy/rm-latency-profiler.git
+# 或者：uv tool install git+https://github.com/hxfhxy/rm-latency-profiler.git
+```
+
+**从源码运行**（改代码或不想装 pipx）：
+
+```bash
+git clone https://github.com/hxfhxy/rm-latency-profiler.git
+cd rm-latency-profiler
+python -m venv .venv && source .venv/bin/activate
+pip install -e .
+```
+
+装好后任选一种用法：
+
+```bash
 # 交互式 Web 界面（推荐）：拖入录像，缩放即重算，多录像叠加对比
 rm-latency serve          # 浏览器自动打开 http://127.0.0.1:8321
 rm-latency serve --example docs/example.mcap   # 带一键示例加载的演示模式
+
 # 看一眼录像概况（--json 可机器读取）
 rm-latency inspect run.mcap
 
