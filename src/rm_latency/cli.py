@@ -87,10 +87,11 @@ def report(
         percentiles = analysis.percentile_table(df)
         deltas = analysis.serial_tx_deltas(df)
         attribution = analysis.gap_attribution(df)
+        breakdown = analysis.gap_breakdown(df)
 
         out_file = out / f"{path.stem}-latency-report.html"
         html = report_mod.build_report(df, stats, percentiles, deltas, path,
-                                       attribution=attribution)
+                                       attribution=attribution, breakdown=breakdown)
         out_file.write_text(html, encoding="utf-8")
 
         e2e = percentiles.loc["end_to_end"]

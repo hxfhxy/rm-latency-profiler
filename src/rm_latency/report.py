@@ -27,7 +27,8 @@ _FIG_LAYOUT = {
 
 def build_report(df: pd.DataFrame, stats: dict, percentiles: pd.DataFrame,
                  serial_deltas: pd.DataFrame | None, source: Path,
-                 attribution: dict | None = None) -> str:
+                 attribution: dict | None = None,
+                 breakdown: dict | None = None) -> str:
     """组装完整 HTML 报告字符串。"""
     figures: list[go.Figure] = [
         _timeline_figure(df),
@@ -50,11 +51,15 @@ def build_report(df: pd.DataFrame, stats: dict, percentiles: pd.DataFrame,
 
     return assemble_html(
         title=f"Latency Report — {source.name}",
-        summary_rows=_summary_rows(df, stats, percentiles, serial_deltas, attribution),
+        summary_rows=_summary_rows(df, stats, percentiles, serial_deltas,
+                                   attribution, breakdown),
         body="\n".join(divs),
         note="分段含义：capture→submit = 图像从采集回调到任务提交（传输/排队）；"
              "submit→finish = 本帧检测+预测+解算（计算）；端到端不含串口写出与下位机执行。"
-             "分位数为全程聚合；时序图定位异常发生的时刻。",
+             "分位数为全程聚合；时序图定位异常发生的时刻。"
+             "「处理间隔异常」统计的是被处理帧之间的间隔超 1.5× 中位数——高帧率下"
+             "处理跟不上相机时，均匀的跳 1 帧属于稳态节流，通常不是故障；"
+             "≥3 帧集中出现才提示停顿。",
     )
 
 
@@ -151,7 +156,8 @@ def _serial_figure(df: pd.DataFrame, serial_deltas: pd.DataFrame) -> go.Figure:
 
 def _summary_rows(df: pd.DataFrame, stats: dict, percentiles: pd.DataFrame,
                   serial_deltas: pd.DataFrame | None,
-                  attribution: dict | None = None) -> list[tuple[str, str]]:
+                  attribution: dict | None = None,
+                  breakdown: dict | None = None) -> list[tuple[str, str]]:
     e2e = percentiles.loc["end_to_end"]
     rows = [
         ("帧数", f"{len(df)}"),
@@ -160,22 +166,26 @@ def _summary_rows(df: pd.DataFrame, stats: dict, percentiles: pd.DataFrame,
         ("端到端 capture→finish",
          f"p50 {e2e['p50']:.1f} / p95 {e2e['p95']:.1f} / p99 {e2e['p99']:.1f} / "
          f"max {e2e['max']:.1f} ms"),
-        ("疑似掉帧", _gap_row(stats, attribution)),
+        ("处理间隔异常", _gap_row(stats, attribution, breakdown)),
     ]
     if serial_deltas is None or not serial_active_any(serial_deltas):
         rows.append(("串口下行", "整场无指令写出（未接下位机或指令被上游拦截）"))
     return rows
 
 
-def _gap_row(stats: dict, attribution: dict | None) -> str:
+def _gap_row(stats: dict, attribution: dict | None, breakdown: dict | None) -> str:
     text = f"{stats['gaps']} 次，累计 {stats.get('gap_total_ms', 0):.0f} ms"
-    if not stats["gaps"] or attribution is None:
-        return text
     parts = []
-    for key, label in (("compute_overload", "计算过载"), ("capture_side", "采集侧"),
-                       ("unknown", "无法归因")):
-        if attribution.get(key):
-            parts.append(f"{label} {attribution[key]}")
+    if breakdown and stats["gaps"]:
+        parts.append(
+            f"跳1帧 {breakdown['skip1']} / 跳2帧 {breakdown['skip2']} / "
+            f"≥3帧 {breakdown['skip3plus']}"
+        )
+    if attribution and stats["gaps"]:
+        for key, label in (("compute_overload", "计算过载"), ("capture_side", "采集侧"),
+                           ("unknown", "无法归因")):
+            if attribution.get(key):
+                parts.append(f"{label} {attribution[key]}")
     return text + "（" + " / ".join(parts) + "）" if parts else text
 
 

@@ -234,7 +234,7 @@ function renderDash() {
     ["帧数", d.frames + (d.downsampled ? "（图表抽稀）" : "")],
     ["帧率", fmt(d.fps) + " fps"],
     ["抖动", "±" + fmt(d.jitter_ms, 2) + " ms"],
-    ["疑似掉帧", gapCard(d)],
+    ["跳帧/停顿", gapCard(d)],
     ["端到端 p50", fmt(seg.end_to_end.p50) + " ms"],
     ["端到端 p99", fmt(seg.end_to_end.p99) + " ms"],
     ["串口下行", d.serial_active ? "有写出" : "无"],
@@ -248,10 +248,20 @@ function renderDash() {
 }
 
 function gapCard(d) {
-  const a = d.gap_attribution;
-  if (!d.gaps || !a || !a.total) return d.gaps + " 次";
-  const pct = n => Math.round((100 * n) / (a.total || 1));
-  return `${d.gaps} 次（计算 ${pct(a.compute_overload)}% / 采集 ${pct(a.capture_side)}%）`;
+  const a = d.gap_attribution, b = d.gap_breakdown;
+  if (!d.gaps) return "0 次";
+  let shape = "";
+  if (b && b.total) {
+    // 跳1帧占绝对多数 = 稳态节流；≥3帧多 = 疑似停顿
+    const dominant = b.skip1 >= b.skip2 + b.skip3plus ? "稳态跳帧" : "疑似停顿";
+    shape = `（${dominant}为主）`;
+  }
+  let cause = "";
+  if (a && a.total) {
+    const pct = n => Math.round((100 * n) / (a.total || 1));
+    cause = ` · 计算 ${pct(a.compute_overload)}% / 采集 ${pct(a.capture_side)}%`;
+  }
+  return `${d.gaps} 次${shape}${cause}`;
 }
 
 // ---------- 视频面板：画面与延迟时序共用同一时间轴 ----------

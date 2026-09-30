@@ -75,7 +75,7 @@ def test_serial_deltas(df):
     assert analysis.serial_active(df)
 
 
-# ---------- 掉帧归因 ----------
+# ---------- 掉帧归因与跳帧形态 ----------
 
 def _df_with_one_gap(tmp_path, overload_before_gap: bool):
     """构造恰好一个掉帧：删一行制造空洞，前帧计算耗时按需超/不超周期。
@@ -106,6 +106,29 @@ def test_gap_attribution_capture_side(tmp_path):
     # 原 19 帧无毛刺（19%25!=0），因此应为采集侧
     assert causes["capture_side"] == 1
     assert causes["compute_overload"] == 0
+
+
+# ---------- 跳帧形态分解（D13） ----------
+
+def test_gap_breakdown_single_skip(tmp_path):
+    """丢一帧 = 跳1帧；稳态节流形态的主体。"""
+    causes = analysis.gap_breakdown(_df_with_one_gap(tmp_path, False))
+    assert causes["total"] == 1
+    assert causes["skip1"] == 1
+    assert causes["skip2"] == 0
+    assert causes["skip3plus"] == 0
+
+
+def test_gap_breakdown_multi_skip_stall(tmp_path):
+    """连续丢 3 帧 = 间隔 4× 周期 = 跳3帧 → 落入疑似停顿桶。"""
+    path = tmp_path / "stall.mcap"
+    write_synthetic(path, n_frames=60, compute_ms=2.0)
+    keep = ingest.load_frames(path).drop(index=[20, 21, 22]).reset_index(drop=True)
+    df = analysis.with_segments(keep)
+    breakdown = analysis.gap_breakdown(df)
+    assert breakdown["total"] == 1
+    assert breakdown["skip3plus"] == 1
+    assert breakdown["skip1"] == 0
 
 
 def test_serial_inactive_detected(tmp_path):

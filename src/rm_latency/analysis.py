@@ -83,6 +83,32 @@ def median_noise_ms(series: pd.Series) -> float:
     return 2 * 1.2533 * sigma / (n ** 0.5)
 
 
+def gap_breakdown(df: pd.DataFrame) -> dict:
+    """按跳帧数分解间隔异常，让"稳态跳帧"与"疑似停顿"可区分。
+
+    工具只能看到被处理帧的间隔——高帧率下处理跟不上时，被处理帧的间隔
+    会稳定聚在 2× 周期（每两帧处理一帧），这是节流不是故障。skip =
+    round(间隔/中位数) − 1：跳 1 帧占绝对多数 → 稳态跳帧；≥3 帧集中出现 →
+    疑似停顿（连续丢帧/卡顿）。
+    """
+    out = {"skip1": 0, "skip2": 0, "skip3plus": 0, "total": 0}
+    intervals = df["interval_ms"].dropna()
+    median = float(intervals.median()) if len(intervals) else 0.0
+    if median <= 0:
+        return out
+    threshold = max(GAP_FACTOR * median, 1.0)
+    for interval in intervals[intervals > threshold]:
+        skip = max(1, round(interval / median) - 1)
+        if skip == 1:
+            out["skip1"] += 1
+        elif skip == 2:
+            out["skip2"] += 1
+        else:
+            out["skip3plus"] += 1
+    out["total"] = out["skip1"] + out["skip2"] + out["skip3plus"]
+    return out
+
+
 def gap_attribution(df: pd.DataFrame) -> dict:
     """把疑似掉帧归因到最可能的原因（启发式，诚实标注为归因而非证明）。
 

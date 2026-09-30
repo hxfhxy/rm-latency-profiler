@@ -143,6 +143,7 @@ def create_app(example_path: Path | None = None) -> FastAPI:
                 "gap_indices": [i for i, _ in _gap_marks(df)],
                 "gap_causes": [c for _, c in _gap_marks(df)],
                 "gap_attribution": analysis.gap_attribution(df),
+                "gap_breakdown": analysis.gap_breakdown(df),
                 "video": video,
             }
         )
