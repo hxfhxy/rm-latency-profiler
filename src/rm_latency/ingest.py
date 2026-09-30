@@ -57,36 +57,45 @@ def load_frames(path: str | Path, mapping: TelemetryMapping | None = None) -> pd
     """读取整份录像的遥测消息，构建逐帧 DataFrame。
 
     一行 = 一帧，一列 = 一个规范字段；缺失字段按 NaN 处理（容错旧版录像）。
+    实现按列收集而非逐行 dict：真机录像可到十几万帧，dict-per-row 的
+    Python 对象开销会把峰值内存抬高数倍。
     """
     mapping = mapping or DEFAULT_MAPPING
     path = Path(path)
     _, topic = find_telemetry_channel(path, mapping)
-    rows: list[dict] = []
+    columns: dict[str, list] = {"log_time_ns": [], "topic": []}
+    for canonical in mapping.paths:
+        columns[canonical] = []
+    n_rows = 0
 
     with open(path, "rb") as f:
         reader = make_reader(f)
+        # 流式消费：绝不能把迭代器 list() 物化——十几万条消息的字节载荷
+        # 会把峰值内存抬高数百 MB。流错误（截断/损坏）在此层统一转译。
         try:
-            messages = list(reader.iter_messages(topics=[topic]))
+            for _schema, _channel, message in reader.iter_messages(topics=[topic]):
+                try:
+                    data = json.loads(message.data)
+                except json.JSONDecodeError:
+                    continue  # 单条损坏不致命，跳过并在行数上可见
+
+                columns["log_time_ns"].append(message.log_time)
+                columns["topic"].append(topic)
+                for canonical, dotted in mapping.paths.items():
+                    columns[canonical].append(_to_int(resolve(data, dotted)))
+                n_rows += 1
+        except TelemetryNotFoundError:
+            raise
         except Exception as exc:
             raise TelemetryNotFoundError(
                 f"消息流读取失败（文件可能截断）：{path}（{exc}）"
             ) from exc
-        for _schema, _channel, message in messages:
-            try:
-                data = json.loads(message.data)
-            except json.JSONDecodeError:
-                continue  # 单条损坏不致命，跳过并在行数上可见
 
-            row: dict = {"log_time_ns": message.log_time, "topic": topic}
-            for canonical, dotted in mapping.paths.items():
-                row[canonical] = _to_int(resolve(data, dotted))
-            rows.append(row)
-
-    if not rows:
+    if n_rows == 0:
         raise TelemetryNotFoundError(f"遥测通道存在但没有可解析的消息：{path}")
 
-    df = pd.DataFrame(rows).sort_values("stamp_ns").reset_index(drop=True)
-    return df
+    df = pd.DataFrame(columns, columns=["log_time_ns", "topic", *mapping.paths.keys()])
+    return df.sort_values("stamp_ns").reset_index(drop=True)
 
 
 def _to_int(value) -> float:
