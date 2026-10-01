@@ -1,6 +1,6 @@
 [project]
 name = "rm-latency-profiler"
-version = "0.7.2"
+version = "0.8.0"
 description = "Black-box latency analysis for RoboMaster vision pipelines: MCAP telemetry analysis, interactive visualization, and optimization A/B comparison."
 readme = "README.md"
 requires-python = ">=3.10"

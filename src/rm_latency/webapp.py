@@ -129,6 +129,7 @@ def create_app(example_path: Path | None = None) -> FastAPI:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
 
             video = _extract_video(tmp_path, df)
+            serial = _serial_payload(df)
         finally:
             tmp_path.unlink(missing_ok=True)
 
@@ -156,6 +157,7 @@ def create_app(example_path: Path | None = None) -> FastAPI:
                 "gap_skips": [s for _, _, s in marks],
                 "gap_attribution": analysis.gap_attribution(df),
                 "gap_breakdown": analysis.gap_breakdown(df),
+                "serial": serial,
                 "video": video,
             }
         )
@@ -256,6 +258,42 @@ def _find_image_info(path: Path) -> tuple[str, int | None] | None:
                 count = summary.statistics.channel_message_counts.get(channel.id)
             return channel.topic, count
     return None
+
+
+def _serial_payload(df) -> dict | None:
+    """串口下行按秒分桶序列；链路从未工作过返回 None（前端隐藏面板）。
+
+    逐帧增量在 165fps 下是 0/1 锯齿，画出来不可读——按 1 秒桶求和成
+    "条/秒"才符合复盘时的读法。时间桶与延迟时序同一相对秒起点。
+    """
+    if not analysis.serial_active(df):
+        return None
+    deltas = analysis.serial_tx_deltas(df)
+    t0 = float(df["stamp_ns"].iloc[0])
+    bucket = ((df["stamp_ns"] - t0) / 1e9).astype("int64")
+    cols = ("queued_delta", "written_delta", "queue_drops_delta", "write_failures_delta")
+    grouped = deltas[list(cols)].groupby(bucket.to_numpy()).sum()
+    idx = range(int(bucket.max()) + 1)
+    grouped = grouped.reindex(idx, fill_value=0)
+
+    def col_int(name: str) -> list[int]:
+        return [int(v) for v in grouped[name]]
+
+    return {
+        "active": True,
+        "bucket_s": 1,
+        "t": list(idx),
+        "queued_per_s": col_int("queued_delta"),
+        "written_per_s": col_int("written_delta"),
+        "drops_per_s": col_int("queue_drops_delta"),
+        "failures_per_s": col_int("write_failures_delta"),
+        "totals": {
+            "queued": int(grouped["queued_delta"].sum()),
+            "written": int(grouped["written_delta"].sum()),
+            "drops": int(grouped["queue_drops_delta"].sum()),
+            "failures": int(grouped["write_failures_delta"].sum()),
+        },
+    }
 
 
 def _stride(n: int) -> int:

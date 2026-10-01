@@ -91,6 +91,7 @@
   <div id="percentiles" style="display:none"></div>
   <div id="viewTable" style="display:none"></div>
   <div id="hist" style="display:none"></div>
+  <div id="serialPanel" style="display:none"><div id="serialChart"></div></div>
 </div>
 
 <script>
@@ -241,7 +242,7 @@ function renderDash() {
     ["跳帧/停顿", gapCard(d)],
     ["端到端 p50", fmt(seg.end_to_end.p50) + " ms"],
     ["端到端 p99", fmt(seg.end_to_end.p99) + " ms"],
-    ["串口下行", d.serial_active ? "有写出" : "无"],
+    ["串口下行", serialCard(d)],
   ].map(([k, v]) => `<div class="card"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("");
 
   initVideo();
@@ -249,6 +250,31 @@ function renderDash() {
   drawPercentiles(null);
   drawViewTable(null);
   drawHist();
+  drawSerial();
+}
+
+function drawSerial() {
+  const panel = document.getElementById("serialPanel");
+  const s = runs[active].data.serial;
+  if (!s || !s.active) { panel.style.display = "none"; return; }
+  panel.style.display = "block";
+  const traces = [
+    ["queued_per_s", "入队", "#636efa"],
+    ["written_per_s", "写出", "#2ca02c"],
+    ["drops_per_s", "队列丢弃", "#d62728"],
+    ["failures_per_s", "写失败", "#9467bd"],
+  ].map(([key, label, color]) => ({
+    x: s.t, y: s[key], name: label, mode: "lines", line: { color, width: 1.5 },
+    hovertemplate: "%{y} 条/s @ %{x}s<extra>" + label + "</extra>",
+  }));
+  const t = s.totals;
+  Plotly.react("serialChart", traces, {
+    title: { text: `串口下行（每秒条数）· 写出 ${t.written} / 丢弃 ${t.drops} / 失败 ${t.failures}`,
+             font: { size: 13 } },
+    margin: { l: 60, r: 20, t: 40, b: 40 }, height: 280, template: "plotly_white",
+    xaxis: { title: "运行时间 (s)" }, yaxis: { title: "条/s" },
+    legend: { orientation: "h", y: 1.18 }, hovermode: "x unified",
+  }, { displaylogo: false, responsive: true });
 }
 
 function gapCard(d) {
@@ -266,6 +292,12 @@ function gapCard(d) {
     cause = ` · 计算 ${pct(a.compute_overload)}% / 采集 ${pct(a.capture_side)}%`;
   }
   return `${d.gaps} 次${shape}${cause}`;
+}
+
+function serialCard(d) {
+  if (!d.serial_active) return "无";
+  const t = d.serial && d.serial.totals;
+  return t ? `有写出 · ${t.written} 条` : "有写出";
 }
 
 // ---------- 视频面板：画面与延迟时序共用同一时间轴 ----------

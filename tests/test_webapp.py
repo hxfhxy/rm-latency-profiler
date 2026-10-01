@@ -153,6 +153,33 @@ def test_analyze_without_image_channel_has_no_video(client, mcap_bytes):
     assert res.json()["video"] is None
 
 
+# ---------- 串口下行面板 ----------
+
+def test_analyze_serial_bucket_series(client, mcap_bytes):
+    res = client.post(
+        "/api/analyze",
+        files={"file": ("synth.mcap", io.BytesIO(mcap_bytes), "application/octet-stream")},
+    )
+    s = res.json()["serial"]
+    assert s is not None and s["active"] is True
+    assert s["bucket_s"] == 1
+    # 每帧 1 条：100 帧 → 99 条增量（首帧 diff 为 0），分桶后总和守恒
+    assert sum(s["queued_per_s"]) == N_FRAMES - 1
+    assert sum(s["written_per_s"]) == N_FRAMES - 1
+    assert sum(s["drops_per_s"]) == 0
+    assert s["totals"]["written"] == N_FRAMES - 1
+    assert len(s["t"]) == len(s["written_per_s"])
+
+
+def test_analyze_without_serial_has_no_serial_data(client, video_mcap_bytes):
+    res = client.post(
+        "/api/analyze",
+        files={"file": ("video.mcap", io.BytesIO(video_mcap_bytes), "application/octet-stream")},
+    )
+    assert res.status_code == 200
+    assert res.json()["serial"] is None
+
+
 def test_video_downsample_covers_full_duration(client, tmp_path):
     """帧数超上限：等步长抽稀必须覆盖完整时间轴（D10：不许截断尾部）。"""
     path = tmp_path / "many.mcap"
